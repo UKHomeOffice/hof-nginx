@@ -101,11 +101,18 @@ jobs:
           arm64_manifest="$(platform_digest "$arm64_digest" arm64)"
           docker buildx imagetools create --tag "$IMAGE" \
             "$repository@$amd64_digest" "$repository@$arm64_digest"
-          docker buildx imagetools inspect --raw "$IMAGE" | jq -e \
+          index_digest="$(docker buildx imagetools inspect "$IMAGE" --format '{{.Manifest.Digest}}')"
+          if [[ ! "$index_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Could not determine the multi-architecture manifest digest." >&2
+            exit 1
+          fi
+          image_reference="$repository@$index_digest"
+          docker buildx imagetools inspect --raw "$image_reference" | jq -e \
             --arg amd64 "$amd64_manifest" --arg arm64 "$arm64_manifest" \
             'any(.manifests[]; .digest == $amd64 and .platform.os == "linux" and .platform.architecture == "amd64")
             and any(.manifests[]; .digest == $arm64 and .platform.os == "linux" and .platform.architecture == "arm64")'
-          docker buildx imagetools inspect "$IMAGE"
+          docker buildx imagetools inspect "$image_reference"
+          printf 'Deployable multi-architecture image: %s\n' "$image_reference" | tee -a "$GITHUB_STEP_SUMMARY"
     
   # build-scan-hofnotprod:
   #   if: github.event_name == 'pull_request'

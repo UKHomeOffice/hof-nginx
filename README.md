@@ -164,6 +164,12 @@ incoming header; `remote_addr` is the immediate connection source. The legacy
 country, UUID and response-body fields are not provided. `/ping` access logs
 remain disabled, and errors go to stderr.
 
+JSON fields include the client connection port (`remote_port`), NGINX listening
+port (`server_port`), upstream address and port (`upstream_addr`), user agent
+(`http_user_agent`), host (`http_host`), scheme and original request path and
+query string (`request_uri`). Ports reflect the connections seen by NGINX, not
+necessarily those used before an ingress proxy.
+
 Request-body logging is disabled by default. `LOG_REQUEST_BODY=TRUE` enables
 it for either extended format, but it can expose personal data, credentials
 and other sensitive content. Use it only with an approved need and appropriate
@@ -252,8 +258,10 @@ It runs on pushes to `main` or `feature/*` and PRs targeting `main`. The image
 tag is `github.sha`: the pushed commit SHA for a push, or GitHub's merge commit
 SHA for a PR. The manifest uses that tag; the per-architecture images use
 `-amd64` and `-arm64` suffixes. It does not update `latest`. Deploy the manifest
-digest printed by the push step to select the appropriate architecture
-automatically; the image config digest is not a deployable image reference.
+image reference printed by the push step and shown in the job summary to select
+the appropriate architecture automatically; the image config digest is not a
+deployable image reference. GitHub may mask values configured as secrets in
+the output, including the AWS region.
 
 The workflow requires the Actions secrets `AWS_ACCESS_KEY_ID`,
 `AWS_SECRET_ACCESS_KEY` and `AWS_REGION` (set to `eu-west-2`). The credentials

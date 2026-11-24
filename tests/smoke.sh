@@ -146,6 +146,7 @@ curl -fsS -A 'test"agent' --data-binary 'test-body-sample' \
     "http://127.0.0.1:$json_port/json-log" >/dev/null
 json_log="$(docker logs "$json_proxy" 2>/dev/null | grep -F '"request_uri": "/json-log"')"
 printf '%s\n' "$json_log" | grep -Fq '"http_user_agent": "test\"agent"'
+printf '%s\n' "$json_log" | grep -Fq '"server_port": "10080"'
 if printf '%s\n' "$json_log" | grep -Eq 'request_body|test-body-sample|response_body'; then
     echo "Unexpected body in default JSON log" >&2
     exit 1

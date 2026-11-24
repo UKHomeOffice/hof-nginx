@@ -13,6 +13,7 @@ log_format extended_json escape=json
     '"http_host": "$host", '
     '"remote_user": "$remote_user", '
     '"remote_port": "$remote_port", '
+    '"server_port": "$server_port", '
     '"timestamp": "$time_iso8601", '
     '"request_uri": "$request_uri", '
     '"request_method": "$request_method", '
