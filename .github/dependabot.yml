@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # Re-pin the Alpine base image digest; major upgrades remain manual.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: daily
+    ignore:
+      - dependency-name: alpine
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
