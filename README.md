@@ -244,12 +244,16 @@ need application-specific error responses.
 
 ## GitHub Actions and vulnerability scanning
 
-[Build, scan and push](.github/workflows/build-scan-push.yml) builds an ARM64
-image, scans it and pushes it to the configured `sas/hof-nginx` AWS ECR
-repository in `eu-west-2` only if the scan succeeds.
+[Build, scan and push](.github/workflows/build-scan-push.yml) builds and scans
+separate Linux AMD64 and ARM64 images. Only if both scans succeed, it pushes
+them to the configured `sas/hof-nginx` AWS ECR repository in `eu-west-2` and
+publishes a multi-architecture manifest referencing their exact pushed digests.
 It runs on pushes to `main` or `feature/*` and PRs targeting `main`. The image
 tag is `github.sha`: the pushed commit SHA for a push, or GitHub's merge commit
-SHA for a PR. It does not update `latest`.
+SHA for a PR. The manifest uses that tag; the per-architecture images use
+`-amd64` and `-arm64` suffixes. It does not update `latest`. Deploy the manifest
+digest printed by the push step to select the appropriate architecture
+automatically; the image config digest is not a deployable image reference.
 
 The workflow requires the Actions secrets `AWS_ACCESS_KEY_ID`,
 `AWS_SECRET_ACCESS_KEY` and `AWS_REGION` (set to `eu-west-2`). The credentials
@@ -258,9 +262,9 @@ push to the existing repository. Forked PRs do not receive repository secrets;
 Dependabot PRs need separately configured Dependabot secrets.
 
 The Home Office Trivy scanner checks OS and language packages for HIGH and
-CRITICAL vulnerabilities and fails the job if it finds any. The exact local
-image scanned is pushed without rebuilding. The active job does **not** run
-smoke tests, scan MEDIUM findings or send Slack notifications. The previous
+CRITICAL vulnerabilities in each architecture and fails the job if it finds
+any. The exact local images scanned are pushed without rebuilding. The active
+job does **not** run smoke tests, scan MEDIUM findings or send Slack notifications. The previous
 reusable workflow and notification jobs remain commented out. Run `make test`
 and `make scan` locally; arrange the required automated checks before using
 this as a production release.

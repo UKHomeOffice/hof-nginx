@@ -27,7 +27,7 @@ jobs:
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -37,7 +37,7 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@7290e214a610b32bc0eef81748948b6d466a8783 # v2
 
-      - name: Build and tag Docker image
+      - name: Build and tag architecture images
         id: image
         env:
           REGISTRY: 340268328991.dkr.ecr.eu-west-2.amazonaws.com
@@ -51,18 +51,61 @@ jobs:
             exit 1
           fi
           image="$REGISTRY/$REPOSITORY:$IMAGE_TAG"
-          docker buildx build --load --platform linux/arm64 -t "$image" .
+          docker buildx build --load --platform linux/amd64 -t "$image-amd64" .
+          docker buildx build --load --platform linux/arm64 -t "$image-arm64" .
           echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "amd64=$image-amd64" >> "$GITHUB_OUTPUT"
+          echo "arm64=$image-arm64" >> "$GITHUB_OUTPUT"
 
-      - name: Scan image for vulnerabilities
+      - name: Scan AMD64 image for vulnerabilities
         uses: UKHomeOffice/core-cloud-workflow-docker-actions/actions/scan@9652fa25cc2a7e4f22b34b95e9e31a7424be92bf # main, 2026-11-24
         with:
-          image: ${{ steps.image.outputs.image }}
+          image: ${{ steps.image.outputs.amd64 }}
 
-      - name: Push scanned image to Amazon ECR
+      - name: Scan ARM64 image for vulnerabilities
+        uses: UKHomeOffice/core-cloud-workflow-docker-actions/actions/scan@9652fa25cc2a7e4f22b34b95e9e31a7424be92bf # main, 2026-11-24
+        with:
+          image: ${{ steps.image.outputs.arm64 }}
+
+      - name: Push scanned images and multi-architecture manifest
         env:
           IMAGE: ${{ steps.image.outputs.image }}
-        run: docker push "$IMAGE"
+          IMAGE_AMD64: ${{ steps.image.outputs.amd64 }}
+          IMAGE_ARM64: ${{ steps.image.outputs.arm64 }}
+        run: |
+          set -euo pipefail
+          push_log="$(mktemp)"
+          trap 'rm -f "$push_log"' EXIT
+
+          docker push "$IMAGE_AMD64" | tee "$push_log"
+          amd64_digest="$(sed -n 's/.*digest: \(sha256:[0-9a-f]*\) size:.*/\1/p' "$push_log")"
+          docker push "$IMAGE_ARM64" | tee "$push_log"
+          arm64_digest="$(sed -n 's/.*digest: \(sha256:[0-9a-f]*\) size:.*/\1/p' "$push_log")"
+          if [[ ! "$amd64_digest" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+             [[ ! "$arm64_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Could not determine both pushed image digests." >&2
+            exit 1
+          fi
+
+          repository="${IMAGE%:*}"
+          platform_digest() {
+            local digest="$1" architecture="$2"
+            docker buildx imagetools inspect --raw "$repository@$digest" | jq -er \
+              --arg digest "$digest" --arg architecture "$architecture" \
+              'if has("manifests") then
+                 [.manifests[] | select(.platform.os == "linux" and .platform.architecture == $architecture) | .digest]
+                 | if length == 1 then .[0] else error("Expected one matching platform manifest") end
+               else $digest end'
+          }
+          amd64_manifest="$(platform_digest "$amd64_digest" amd64)"
+          arm64_manifest="$(platform_digest "$arm64_digest" arm64)"
+          docker buildx imagetools create --tag "$IMAGE" \
+            "$repository@$amd64_digest" "$repository@$arm64_digest"
+          docker buildx imagetools inspect --raw "$IMAGE" | jq -e \
+            --arg amd64 "$amd64_manifest" --arg arm64 "$arm64_manifest" \
+            'any(.manifests[]; .digest == $amd64 and .platform.os == "linux" and .platform.architecture == "amd64")
+            and any(.manifests[]; .digest == $arm64 and .platform.os == "linux" and .platform.architecture == "arm64")'
+          docker buildx imagetools inspect "$IMAGE"
     
   # build-scan-hofnotprod:
   #   if: github.event_name == 'pull_request'
