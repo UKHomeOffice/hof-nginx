@@ -124,8 +124,9 @@ need application-specific error responses.
 
 ## GitHub Actions and vulnerability scanning
 
-[Build and push](.github/workflows/build-scan-push.yml) builds an ARM64 image
-and pushes it to the configured `sas/hff` AWS ECR repository in `eu-west-2`.
+[Build, scan and push](.github/workflows/build-scan-push.yml) builds an ARM64
+image, scans it and pushes it to the configured `sas/hof-nginx` AWS ECR
+repository in `eu-west-2` only if the scan succeeds.
 It runs on pushes to `main` or `feature/*` and PRs targeting `main`. The image
 tag is `github.sha`: the pushed commit SHA for a push, or GitHub's merge commit
 SHA for a PR. It does not update `latest`.
@@ -136,10 +137,13 @@ must be for the configured registry's account and have permission to log in and
 push to the existing repository. Forked PRs do not receive repository secrets;
 Dependabot PRs need separately configured Dependabot secrets.
 
-The active job does **not** run the smoke tests, scan for vulnerabilities or
-send Slack notifications. The previous reusable workflow and notification
-jobs remain commented out. Run `make test` and `make scan` locally; arrange
-the required automated checks before using this as a production release.
+The Home Office Trivy scanner checks OS and language packages for HIGH and
+CRITICAL vulnerabilities and fails the job if it finds any. The exact local
+image scanned is pushed without rebuilding. The active job does **not** run
+smoke tests, scan MEDIUM findings or send Slack notifications. The previous
+reusable workflow and notification jobs remain commented out. Run `make test`
+and `make scan` locally; arrange the required automated checks before using
+this as a production release.
 
 [Dependabot](.github/dependabot.yml) checks the Alpine base image daily and
 GitHub Actions dependencies weekly, following `hof-nodejs`. It can propose
@@ -148,8 +152,8 @@ manual. Dependabot PRs targeting `main` invoke the build-and-push job if the
 required secrets are available. Review and merge updates only after checks pass.
 
 Dependabot does not update Alpine packages installed by `apk`. Review those
-separately. There is no scheduled build or Trivy scan in this workflow. Trivy
-scans Alpine packages for known vulnerabilities, not all malicious packages.
+separately. There is no scheduled build in this workflow. Trivy scans Alpine
+packages for known vulnerabilities, not all malicious packages.
 
 To scan locally without an allow list:
 

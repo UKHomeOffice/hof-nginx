@@ -37,7 +37,8 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@7290e214a610b32bc0eef81748948b6d466a8783 # v2
 
-      - name: Build, tag, and push Docker image to Amazon ECR
+      - name: Build and tag Docker image
+        id: image
         env:
           REGISTRY: 340268328991.dkr.ecr.eu-west-2.amazonaws.com
           LOGIN_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -51,7 +52,17 @@ jobs:
           fi
           image="$REGISTRY/$REPOSITORY:$IMAGE_TAG"
           docker buildx build --load --platform linux/arm64 -t "$image" .
-          docker push "$image"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+      - name: Scan image for vulnerabilities
+        uses: UKHomeOffice/core-cloud-workflow-docker-actions/actions/scan@9652fa25cc2a7e4f22b34b95e9e31a7424be92bf # main, 2026-11-24
+        with:
+          image: ${{ steps.image.outputs.image }}
+
+      - name: Push scanned image to Amazon ECR
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: docker push "$IMAGE"
     
   # build-scan-hofnotprod:
   #   if: github.event_name == 'pull_request'
