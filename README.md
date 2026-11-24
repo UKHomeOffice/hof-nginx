@@ -124,28 +124,48 @@ need application-specific error responses.
 
 ## GitHub Actions and vulnerability scanning
 
-[Build and scan image](.github/workflows/build-and-scan.yml) builds and smoke
-tests amd64 and arm64 images, then scans OS and language packages for MEDIUM,
-HIGH and CRITICAL vulnerabilities with Trivy 0.72.0. It runs on pushes to
-`main` and `feature/**`, tags, pull requests to those branches, manual
-dispatch, and weekdays at 03:00 UTC. No image is pushed or published.
+[Build, scan and push](.github/workflows/build-scan-push.yml) uses the same
+Home Office reusable Docker workflow as `hof-docker-redis` (version 1.4.0):
 
-Trusted non-PR runs require GitHub App secrets `UKHO_GH_APP_ID` and
-`UKHO_GH_APP_PK`, with read access to `UKHomeOfficeForms/hof-services-config`,
-to use the shared Trivy allow list. PR runs use no secrets or allow list.
-Missing required secrets or allow list fail the trusted run.
+- PRs targeting `main` build and scan, then push `hof/hof-nginx` to the
+  non-production ECR in `eu-west-2`, tagged `pr-<number>-<merge-sha>` and
+  `latest`.
+- Pushes to `main` build and scan, then push to production ECR under the
+  commit SHA and `latest`. After a successful push, a Slack notification
+  includes the image tag and workflow link.
+- Pushes to `feature/*` trigger the workflow but do not run either publishing
+  job. Open a PR targeting `main` to run the non-production job.
+
+The shared workflow currently builds AMD64 only and scans for HIGH and
+CRITICAL findings; it does not run this repository's smoke tests or scan
+MEDIUM findings. It rebuilds the image when pushing, so the pushed image is
+not guaranteed to be identical to the one scanned. Review these limitations
+before production use. Updating `latest` also changes what existing consumers
+of that tag receive. If Slack notification fails, the image remains published.
+
+Configure these Actions secrets and AWS resources:
+
+- `AWS_ECR_ACCOUNT_ID` and `ROLE_TO_ASSUME`: non-production AWS account ID
+  and OIDC role ARN.
+- `HOFPROD_AWS_ECR_ACCOUNT_ID` and `HOFPROD_ROLE_TO_ASSUME`: production AWS
+  account ID and OIDC role ARN.
+- `SLACK_WEBHOOK_URL`: incoming webhook for production release notifications.
+
+The `hof/hof-nginx` ECR repository must exist in each account. Each role
+must trust the appropriate GitHub Actions OIDC context and have permission
+to authenticate to ECR and push images. Configure and review the roles with
+the AWS account owner. Forked PRs do not receive repository secrets, and
+Dependabot PRs need separately configured Dependabot secrets to publish.
 
 [Dependabot](.github/dependabot.yml) checks the Alpine base image daily and
 GitHub Actions dependencies weekly, following `hof-nodejs`. It can propose
 base-image digest and non-major version updates; Alpine major upgrades remain
-manual. Dependabot pull requests targeting `main` or `feature/**` run the
-build, smoke tests and unallowlisted scan. Review and merge updates only after
-the checks pass.
+manual. Dependabot PRs targeting `main` invoke the non-production job if the
+required secrets are available. Review and merge updates only after checks pass.
 
-Dependabot does not update Alpine packages installed by `apk` or the pinned
-binfmt image and Trivy version passed as workflow inputs. Review those
-separately. Scheduled CI builds fetch current packages and scan the resulting
-image, but do not update a previously built or deployed image.
+Dependabot does not update Alpine packages installed by `apk`. Review those
+separately. There is no scheduled build in this workflow. Trivy scans Alpine
+packages for known vulnerabilities, not all malicious packages.
 
 To scan locally without an allow list:
 
@@ -158,10 +178,9 @@ trivy image --scanners vuln --pkg-types os,library --dependency-tree \
 Vulnerability results change as databases and Alpine packages change. To
 remediate findings, review the advisory, update the pinned Alpine version and
 digest when needed, rebuild without cache, run tests and scans for both
-architectures, and deploy a newly published image through an approved future
-release process. If no fix is available, follow the team's risk acceptance
-process; do not silently suppress findings. The scheduled build does not scan
-already deployed image digests, and this workflow does not perform Quay scans
-or publish images.
+architectures, and deploy a newly published image through the approved release
+process. If no fix is available, follow the team's risk acceptance process; do
+not silently suppress findings. This workflow does not scan deployed image
+digests or perform Quay scans.
 
 The copied GOV.UK assets retain their upstream notices in [licenses/](licenses/).

@@ -1,0 +1,59 @@
+name: Building and scanning Docker images
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, 'feature/*']
+
+jobs:
+  build-scan-hofnotprod:
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      id-token: write
+    uses: Home-Office-Digital/core-cloud-workflow-docker-actions/.github/workflows/build-scan-push.yml@d88259dc123eb3fa4c1702e3dfa95473814703a7 # 1.4.0
+    with:
+      working_directory: "."
+      dockerfile: Dockerfile
+      image_name: hof/hof-nginx
+      image_tag: ${{ format('pr-{0}-{1}', github.event.pull_request.number, github.sha) }}
+      tag_latest: true
+    secrets:
+      AWS_ECR_ACCOUNT_ID: ${{ secrets.AWS_ECR_ACCOUNT_ID }}
+      ROLE_TO_ASSUME: ${{ secrets.ROLE_TO_ASSUME }}
+
+  build-scan-prod:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
+    uses: Home-Office-Digital/core-cloud-workflow-docker-actions/.github/workflows/build-scan-push.yml@d88259dc123eb3fa4c1702e3dfa95473814703a7 # 1.4.0
+    with:
+      working_directory: "."
+      dockerfile: Dockerfile
+      image_name: hof/hof-nginx
+      image_tag: ${{ github.sha }}
+      tag_latest: true
+    secrets:
+      AWS_ECR_ACCOUNT_ID: ${{ secrets.HOFPROD_AWS_ECR_ACCOUNT_ID }}
+      ROLE_TO_ASSUME: ${{ secrets.HOFPROD_ROLE_TO_ASSUME }}
+
+  notify:
+    name: Notify Slack of production image
+    needs: build-scan-prod
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Send release notification
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          set -eu
+          : "${SLACK_WEBHOOK_URL:?SLACK_WEBHOOK_URL is required}"
+          payload="$(jq -n --arg tag "$GITHUB_SHA" \
+            --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{text: ("New production ECR image available: hof/hof-nginx:" + $tag + "\n" + $run)}')"
+          curl --fail-with-body --silent --show-error --retry 3 \
+            -H 'Content-Type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL"
