@@ -124,48 +124,32 @@ need application-specific error responses.
 
 ## GitHub Actions and vulnerability scanning
 
-[Build, scan and push](.github/workflows/build-scan-push.yml) uses the same
-Home Office reusable Docker workflow as `hof-docker-redis` (version 1.4.0):
+[Build and push](.github/workflows/build-scan-push.yml) builds an ARM64 image
+and pushes it to the configured `sas/hff` AWS ECR repository in `eu-west-2`.
+It runs on pushes to `main` or `feature/*` and PRs targeting `main`. The image
+tag is `github.sha`: the pushed commit SHA for a push, or GitHub's merge commit
+SHA for a PR. It does not update `latest`.
 
-- PRs targeting `main` build and scan, then push `hof/hof-nginx` to the
-  non-production ECR in `eu-west-2`, tagged `pr-<number>-<merge-sha>` and
-  `latest`.
-- Pushes to `main` build and scan, then push to production ECR under the
-  commit SHA and `latest`. After a successful push, a Slack notification
-  includes the image tag and workflow link.
-- Pushes to `feature/*` trigger the workflow but do not run either publishing
-  job. Open a PR targeting `main` to run the non-production job.
+The workflow requires the Actions secrets `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY` and `AWS_REGION` (set to `eu-west-2`). The credentials
+must be for the configured registry's account and have permission to log in and
+push to the existing repository. Forked PRs do not receive repository secrets;
+Dependabot PRs need separately configured Dependabot secrets.
 
-The shared workflow currently builds AMD64 only and scans for HIGH and
-CRITICAL findings; it does not run this repository's smoke tests or scan
-MEDIUM findings. It rebuilds the image when pushing, so the pushed image is
-not guaranteed to be identical to the one scanned. Review these limitations
-before production use. Updating `latest` also changes what existing consumers
-of that tag receive. If Slack notification fails, the image remains published.
-
-Configure these Actions secrets and AWS resources:
-
-- `AWS_ECR_ACCOUNT_ID` and `ROLE_TO_ASSUME`: non-production AWS account ID
-  and OIDC role ARN.
-- `HOFPROD_AWS_ECR_ACCOUNT_ID` and `HOFPROD_ROLE_TO_ASSUME`: production AWS
-  account ID and OIDC role ARN.
-- `SLACK_WEBHOOK_URL`: incoming webhook for production release notifications.
-
-The `hof/hof-nginx` ECR repository must exist in each account. Each role
-must trust the appropriate GitHub Actions OIDC context and have permission
-to authenticate to ECR and push images. Configure and review the roles with
-the AWS account owner. Forked PRs do not receive repository secrets, and
-Dependabot PRs need separately configured Dependabot secrets to publish.
+The active job does **not** run the smoke tests, scan for vulnerabilities or
+send Slack notifications. The previous reusable workflow and notification
+jobs remain commented out. Run `make test` and `make scan` locally; arrange
+the required automated checks before using this as a production release.
 
 [Dependabot](.github/dependabot.yml) checks the Alpine base image daily and
 GitHub Actions dependencies weekly, following `hof-nodejs`. It can propose
 base-image digest and non-major version updates; Alpine major upgrades remain
-manual. Dependabot PRs targeting `main` invoke the non-production job if the
+manual. Dependabot PRs targeting `main` invoke the build-and-push job if the
 required secrets are available. Review and merge updates only after checks pass.
 
 Dependabot does not update Alpine packages installed by `apk`. Review those
-separately. There is no scheduled build in this workflow. Trivy scans Alpine
-packages for known vulnerabilities, not all malicious packages.
+separately. There is no scheduled build or Trivy scan in this workflow. Trivy
+scans Alpine packages for known vulnerabilities, not all malicious packages.
 
 To scan locally without an allow list:
 
