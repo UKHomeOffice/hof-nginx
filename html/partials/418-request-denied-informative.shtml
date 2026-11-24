@@ -1,6 +1,6 @@
 <p>Text entered appears suspicious. This is likely due to unusual repeat or individual special characters, i.e. @@ or && or |. Please delete any unnecessary special characters and try again.</p>
-<!--#if expr="${FEEDBACK_EMAIL}" -->
+<!--#if expr="$feedback_email != ''" -->
   <p>If this problem persists, please contact us on:</p>
-  <p>- <strong><!--#echo var="FEEDBACK_EMAIL" --></strong></p>
+  <p>- <strong><!--#echo var="feedback_email" --></strong></p>
   <p>So we can remedy any issues and improve our service.</p>
 <!--#endif -->

@@ -10,16 +10,20 @@ server {
 
     resolver ${NAME_RESOLVER} ipv6=off;
     set $backend_upstream "${UPSTREAM_URL}";
-    set $verbose_error_pages "FALSE";
-    set $feedback_email "";
+    set $verbose_error_pages "${VERBOSE_ERROR_PAGES}";
+    set $feedback_email "${FEEDBACK_EMAIL}";
 
     add_header X-Frame-Options SAMEORIGIN always;
     add_header X-Content-Type-Options nosniff always;
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
+    include /var/lib/nginx/runtime/extra-server.conf;
+
     error_page 403 /nginx-proxy/403.shtml;
     error_page 404 /nginx-proxy/404.shtml;
+    error_page 429 /nginx-proxy/429.shtml;
     error_page 500 /nginx-proxy/500.shtml;
+    error_page 501 /nginx-proxy/501.shtml;
     error_page 502 /nginx-proxy/502.shtml;
     error_page 503 /nginx-proxy/503.shtml;
     error_page 504 /nginx-proxy/504.shtml;
@@ -41,6 +45,8 @@ server {
     }
 
     location / {
+        include /var/lib/nginx/runtime/rate-limit-location.conf;
+
         include /var/lib/nginx/runtime/redirect.conf;
         SecRulesEnabled;
         DeniedUrl "/RequestDenied";
@@ -53,6 +59,9 @@ server {
         include /var/lib/nginx/runtime/extra-naxsi.rules;
 
         proxy_intercept_errors on;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

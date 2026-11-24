@@ -639,7 +639,7 @@ button:focus,
             background: url(images/open-government-licence.png?0.12.0) 0 0 no-repeat; }
             @media only screen and (-webkit-min-device-pixel-ratio: 2), only screen and (min--moz-device-pixel-ratio: 2), only screen and (-o-min-device-pixel-ratio: 20 / 10), only screen and (min-device-pixel-ratio: 2), only screen and (min-resolution: 192dpi), only screen and (min-resolution: 2dppx) {
               #footer .footer-meta .footer-meta-inner .open-government-licence .logo a {
-                background-image: url(images/open-government-licence_2x.png?0.12.0);
+                background-image: url(images/open-government-licence.png?0.12.0);
                 background-size: 41px 17px; } }
         #footer .footer-meta .footer-meta-inner .open-government-licence p {
           font-family: "nta", Arial, sans-serif;
@@ -686,5 +686,5 @@ button:focus,
         padding: 115px 0 0 0; }
         @media only screen and (-webkit-min-device-pixel-ratio: 2), only screen and (min--moz-device-pixel-ratio: 2), only screen and (-o-min-device-pixel-ratio: 20 / 10), only screen and (min-device-pixel-ratio: 2), only screen and (min-resolution: 192dpi), only screen and (min-resolution: 2dppx) {
           #footer .footer-meta .copyright a {
-            background-image: url(images/govuk-crest-2x.png?0.12.0);
+            background-image: url(images/govuk-crest.png?0.12.0);
             background-size: 125px 102px; } }

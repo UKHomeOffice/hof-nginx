@@ -1,8 +1,13 @@
-.git
-.github
-.drone.yml
-docs
-README.md
-Makefile
-LICENSE
-hof-services-config
+# Include only files used by the Dockerfile.
+*
+!Dockerfile
+!entrypoint.sh
+!healthcheck.sh
+!nginx.conf
+!server.conf.template
+!logging.conf.template
+!html/
+!html/**
+!licenses/
+!licenses/**
+**/.DS_Store
