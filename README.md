@@ -126,10 +126,10 @@ need application-specific error responses.
 
 ## Vulnerability scanning and dependency updates
 
-The GitHub Actions build, scan and publishing workflow is deferred to a
-separate ticket. This branch does not publish images or send Slack
-notifications. Run `make test` and `make scan` locally in the meantime, and
-put the required automated checks in place before a production release.
+The [GitHub Actions workflow](docs/github-workflows.md) builds, scans and
+pushes ARM64 images to ECR. It does not run smoke tests or send Slack
+notifications. Run `make test` and `make scan` locally, and put the required
+automated checks in place before a production release.
 
 [Dependabot](.github/dependabot.yml) checks the Alpine base image daily and
 GitHub Actions dependencies weekly, following `hof-nodejs`. It can propose
