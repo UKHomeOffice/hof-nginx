@@ -1,0 +1,116 @@
+name: Building and scanning Docker images
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, 'feature/*']
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up ARM64 emulation
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          image: tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@7290e214a610b32bc0eef81748948b6d466a8783 # v2
+
+      - name: Build and tag Docker image
+        id: image
+        env:
+          REGISTRY: 340268328991.dkr.ecr.eu-west-2.amazonaws.com
+          LOGIN_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          REPOSITORY: sas/hof-nginx
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          set -eu
+          if [ "$REGISTRY" != "$LOGIN_REGISTRY" ]; then
+            echo "AWS credentials or region do not match the configured ECR registry." >&2
+            exit 1
+          fi
+          image="$REGISTRY/$REPOSITORY:$IMAGE_TAG"
+          docker buildx build --load --platform linux/arm64 -t "$image" .
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+      - name: Scan image for vulnerabilities
+        uses: UKHomeOffice/core-cloud-workflow-docker-actions/actions/scan@9652fa25cc2a7e4f22b34b95e9e31a7424be92bf # main, 2026-11-24
+        with:
+          image: ${{ steps.image.outputs.image }}
+
+      - name: Push scanned image to Amazon ECR
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: docker push "$IMAGE"
+    
+  # build-scan-hofnotprod:
+  #   if: github.event_name == 'pull_request'
+  #   permissions:
+  #     contents: read
+  #     id-token: write
+  #   uses: Home-Office-Digital/core-cloud-workflow-docker-actions/.github/workflows/build-scan-push.yml@d88259dc123eb3fa4c1702e3dfa95473814703a7 # 1.4.0
+  #   with:
+  #     working_directory: "."
+  #     dockerfile: Dockerfile
+  #     image_name: hof/hof-nginx
+  #     image_tag: ${{ format('pr-{0}-{1}', github.event.pull_request.number, github.sha) }}
+  #     tag_latest: true
+  #   secrets:
+  #     AWS_ECR_ACCOUNT_ID: ${{ secrets.AWS_ECR_ACCOUNT_ID }}
+  #     ROLE_TO_ASSUME: ${{ secrets.ROLE_TO_ASSUME }}
+
+  # build-scan-prod:
+  #   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  #   permissions:
+  #     contents: read
+  #     id-token: write
+  #   uses: Home-Office-Digital/core-cloud-workflow-docker-actions/.github/workflows/build-scan-push.yml@d88259dc123eb3fa4c1702e3dfa95473814703a7 # 1.4.0
+  #   with:
+  #     working_directory: "."
+  #     dockerfile: Dockerfile
+  #     image_name: hof/hof-nginx
+  #     image_tag: ${{ github.sha }}
+  #     tag_latest: true
+  #   secrets:
+  #     AWS_ECR_ACCOUNT_ID: ${{ secrets.HOFPROD_AWS_ECR_ACCOUNT_ID }}
+  #     ROLE_TO_ASSUME: ${{ secrets.HOFPROD_ROLE_TO_ASSUME }}
+
+  # notify:
+  #   name: Notify Slack of production image
+  #   needs: build-scan-prod
+  #   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  #   runs-on: ubuntu-latest
+  #   permissions: {}
+  #   steps:
+  #     - name: Send release notification
+  #       env:
+  #         SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+  #       run: |
+  #         set -eu
+  #         : "${SLACK_WEBHOOK_URL:?SLACK_WEBHOOK_URL is required}"
+  #         payload="$(jq -n --arg tag "$GITHUB_SHA" \
+  #           --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+  #           '{text: ("New production ECR image available: hof/hof-nginx:" + $tag + "\n" + $run)}')"
+  #         curl --fail-with-body --silent --show-error --retry 3 \
+  #           -H 'Content-Type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL"

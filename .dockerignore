@@ -1,0 +1,8 @@
+.git
+.github
+.drone.yml
+docs
+README.md
+Makefile
+LICENSE
+hof-services-config
