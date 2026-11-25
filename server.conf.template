@@ -29,6 +29,14 @@ server {
     error_page 504 /nginx-proxy/504.shtml;
     error_page 418 /nginx-proxy/418-request-denied.shtml;
 
+    location = /public/css/app.css {
+        alias /public/css/app.css;
+    }
+
+    location = /public/images/govuk-logo.svg {
+        alias /public/images/govuk-logo.svg;
+    }
+
     location ^~ /nginx-proxy/ {
         alias /usr/share/nginx/html/;
         ssi on;
@@ -58,7 +66,7 @@ server {
         include /etc/nginx/naxsi.d/*.rules;
         include /var/lib/nginx/runtime/extra-naxsi.rules;
 
-        proxy_intercept_errors on;
+        proxy_intercept_errors off;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;

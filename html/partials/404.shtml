@@ -1,3 +1,3 @@
-<h2>404 Not found</h2>
-<p>We can’t find the page you’re looking for.</p>
-<p>If you entered a web address, please check that it’s correct.</p>
+<h2 class="govuk-heading-m">404 Not found</h2>
+<p class="govuk-body">We can’t find the page you’re looking for.</p>
+<p class="govuk-body">If you entered a web address, please check that it’s correct.</p>

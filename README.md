@@ -10,10 +10,10 @@ The base is pinned to an Alpine 3.24 image digest for reproducibility. The
 build upgrades Alpine packages and installs NGINX, NAXSI, OpenSSL, curl, CA
 certificates and `envsubst`. It runs as UID 1000 and listens on unprivileged
 ports 10080 (HTTP) and 10443 (HTTPS). The NGINX Alpine package supplies NAXSI's
-core rules. The GOV.UK-style error pages cover 403, 404, 429, 500, 501, 502,
-503 and 504, including errors returned by the upstream. Most assets are from
-the former image; whether they meet current Home Office branding requirements
-needs confirmation.
+core rules. Proxy-generated error pages cover 403, 404, 429, 500, 501, 502,
+503 and 504. Application error responses pass through unchanged. Proxy-page
+styling depends on the application's `/public` assets; Home Office branding
+approval is still needed.
 
 ## Build and test
 
@@ -37,10 +37,12 @@ invalid configuration. Test each service's real configuration and traffic
 separately before migration.
 
 To run against an existing upstream reachable from Docker Desktop, replace
-the host and port with your upstream:
+the host and port with your upstream and provide an absolute path to the
+application's public assets:
 
 ```sh
-make run PROXY_SERVICE_HOST=http://host.docker.internal PROXY_SERVICE_PORT=8080
+make run PUBLIC_DIR=/absolute/path/to/app/public \
+  PROXY_SERVICE_HOST=http://host.docker.internal PROXY_SERVICE_PORT=8080
 ```
 
 This builds the image, binds ports 10080 and 10443 on localhost, and runs in
@@ -63,23 +65,27 @@ request requires a running upstream. Stop the container with Ctrl-C.
 ### View error pages with a Node.js test app
 
 With Docker running, start the example app and proxy on a temporary network
-(the `node:22-alpine` image is downloaded if needed):
+(the `node:22-alpine` image is downloaded if needed). Set `PUBLIC_DIR` to an
+absolute path containing the application's CSS and logo first:
 
 ```sh
+export PUBLIC_DIR=/absolute/path/to/app/public
 docker network create hof-error-test
 docker run -d --name hof-error-app --network hof-error-test \
   -v "$PWD/tests/error-pages-app.js:/app.js:ro" \
   node:22-alpine node /app.js
 docker run -d --name hof-error-proxy --network hof-error-test \
   -p 127.0.0.1:10080:10080 \
+  --mount "type=bind,src=$PUBLIC_DIR,dst=/public,readonly" \
   -e PROXY_SERVICE_HOST=hof-error-app -e PROXY_SERVICE_PORT=8080 \
   -e HTTPS_REDIRECT=FALSE hof-nginx:local
 ```
 
 First run `make build` to build `hof-nginx:local`. Visit
 `http://localhost:10080/` and follow the error links. Each should retain the
-requested status code while showing the proxy's GOV.UK error page rather than
-the app's plain-text response. For example:
+requested status code and show the app's plain-text response. Visit
+`http://localhost:10080/nginx-proxy/429.shtml` to view a proxy error page.
+The example app does not supply the `/public` assets itself. For example:
 
 ```sh
 curl -i http://localhost:10080/status/404
@@ -187,6 +193,52 @@ diagnostic information and timestamps; use only in appropriate environments.
 The proxy serves branded pages for HTTP 429 and 501 as well as the other
 configured errors. It accepts request headers containing underscores.
 
+Proxy error pages use the application's `/public/css/app.css` and
+`/public/images/govuk-logo.svg`. Each service must provide compatible GOV.UK
+classes; the proxy image does not bundle them. At startup, both files must be
+non-empty regular files readable by UID 1000 or the container exits with an
+error. Exact NGINX locations serve these two paths directly from `/public`,
+without proxying them to the application or applying the proxy rate limit.
+
+For example, the BRP service's
+[`run.sh`](https://github.com/UKHomeOffice/brp_enquiry_forms/blob/master/run.sh)
+copies its built assets from `/app/public` into `/public` before starting the
+application:
+
+```sh
+cp -r /app/public/* /public/
+```
+
+In Kubernetes, mount the same `emptyDir` volume at `/public` in both the app
+and NGINX containers. The app writes the files and NGINX reads them; containers
+do not otherwise share their filesystems. An `emptyDir` lasts for the pod's
+lifetime but may be empty when NGINX starts. If the files have not yet been
+copied, NGINX exits and Kubernetes must restart it after they become available;
+if the app never populates them, the sidecar remains unavailable. Consider an
+init container to populate the volume before either container starts.
+
+To serve other shared files, configure a `/public/` location using
+`ADD_NGINX_SERVER_CFG`, for example:
+
+```nginx
+location /public/ {
+    alias /public/;
+}
+```
+
+This location is outside the rate-limited proxy location. The built-in exact
+locations for the CSS and logo take precedence; do not redefine those exact
+locations in custom configuration. Test each service's configuration. Files
+removed after startup are not revalidated; error pages will then lack those
+assets until they are restored.
+
+Any additional assets referenced by the application's stylesheet, such as
+fonts under `/assets/`, must also be reachable for the intended appearance.
+The proxy error pages do not load the application's JavaScript bundle.
+The error-page footer links to `/cookies`, `/terms-and-conditions`, and
+`/accessibility`; each application must provide those routes. These links may
+be unavailable if the application is down.
+
 Gzip is disabled by default. `GZIP_ENABLED=TRUE` enables it for HTML and the
 configured text and application MIME types, including proxied responses.
 Compression of responses that combine secrets and attacker-controlled input
@@ -244,9 +296,9 @@ migration. For example,
 `CLIENT_CERT_REQUIRED` cause startup to fail when set; other unsupported
 legacy variables can be ignored.
 
-Error responses from the upstream are replaced by the corresponding branded
-pages for the configured statuses. Validate this change with services that
-need application-specific error responses.
+Error responses from the upstream pass through without being replaced.
+NGINX-generated errors, such as rate limiting or an unavailable upstream,
+continue to use the proxy error pages.
 
 ## GitHub Actions and vulnerability scanning
 

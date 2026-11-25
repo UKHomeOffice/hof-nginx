@@ -1,2 +1,2 @@
-<h2>500 Internal server error</h2>
-<p>There's a problem. Please try again in a few moments.</p>
+<h2 class="govuk-heading-m">500 Internal server error</h2>
+<p class="govuk-body">There's a problem. Please try again in a few moments.</p>

@@ -20,8 +20,14 @@ rules_volume="hof-nginx-rules-$$"
 body="$(mktemp)"
 cert="$(mktemp)"
 public_dir="$(mktemp -d)"
+missing_public_dir="$(mktemp -d)"
 chmod 755 "$public_dir"
+chmod 755 "$missing_public_dir"
+mkdir "$public_dir/css" "$public_dir/images"
+mkdir "$missing_public_dir/css" "$missing_public_dir/images"
 printf 'public-asset-ok' > "$public_dir/test.txt"
+printf 'test-css' > "$public_dir/css/app.css"
+printf 'test-logo' > "$public_dir/images/govuk-logo.svg"
 server_config='
 add_header Cache-Control private;
 add_header X-Frame-Options "SAMEORIGIN" always;
@@ -48,8 +54,11 @@ cleanup() {
     docker rm -f "$proxy" "$limited_proxy" "$json_proxy" "$body_log_proxy" "$text_log_proxy" "$enhanced_proxy" "$whitelist" "$environment_rules" "$redirect" "$tls_upstream" "$untrusted_upstream" "$mismatched_upstream" "$upstream" >/dev/null 2>&1 || true
     docker network rm "$network" >/dev/null 2>&1 || true
     docker volume rm "$rules_volume" >/dev/null 2>&1 || true
-    rm -f "$body" "$cert" "$public_dir/test.txt"
-    rmdir "$public_dir"
+    rm -f "$body" "$cert" "$public_dir/test.txt" \
+        "$public_dir/css/app.css" "$public_dir/images/govuk-logo.svg" \
+        "$missing_public_dir/css/app.css" "$missing_public_dir/images/govuk-logo.svg"
+    rmdir "$public_dir/css" "$public_dir/images" "$public_dir"
+    rmdir "$missing_public_dir/css" "$missing_public_dir/images" "$missing_public_dir"
 }
 trap cleanup EXIT
 
@@ -81,14 +90,14 @@ http {
     underscores_in_headers on;
     server {
         listen 8080;
-        location = /s403 { return 403; }
-        location = /s404 { return 404; }
-        location = /s429 { return 429; }
-        location = /s500 { return 500; }
-        location = /s501 { return 501; }
-        location = /s502 { return 502; }
-        location = /s503 { return 503; }
-        location = /s504 { return 504; }
+        location = /s403 { return 403 "upstream-403"; }
+        location = /s404 { return 404 "upstream-404"; }
+        location = /s429 { return 429 "upstream-429"; }
+        location = /s500 { return 500 "upstream-500"; }
+        location = /s501 { return 501 "upstream-501"; }
+        location = /s502 { return 502 "upstream-502"; }
+        location = /s503 { return 503 "upstream-503"; }
+        location = /s504 { return 504 "upstream-504"; }
         location = /headers { return 200 "\$http_x_custom_header"; }
         location = /upgrade { return 200 "\$server_protocol|\$http_upgrade|\$http_connection"; }
         location / { return 200 "proxy-ok"; }
@@ -126,18 +135,31 @@ test "$(curl -fsS -H 'X_Custom_Header: header-ok' "http://127.0.0.1:$http_port/h
 test "$(curl -fsS -H 'Upgrade: websocket' -H 'Connection: Upgrade' \
     "http://127.0.0.1:$http_port/upgrade")" = 'HTTP/1.1|websocket|upgrade'
 test "$(curl -fsS "http://127.0.0.1:$http_port/upgrade")" = 'HTTP/1.1||close'
-curl -fsS "http://127.0.0.1:$http_port/nginx-proxy/style/app.css" >/dev/null
-curl -fsS "http://127.0.0.1:$http_port/nginx-proxy/style/govuk-template.css" > "$body"
-asset_paths="$(grep -oE 'images/(govuk-crest|open-government-licence)[^)]*' "$body" | sort -u)"
-test -n "$asset_paths"
-while IFS= read -r asset; do
-    curl -fsS "http://127.0.0.1:$http_port/nginx-proxy/style/$asset" >/dev/null
-done <<< "$asset_paths"
+curl -fsS "http://127.0.0.1:$http_port/nginx-proxy/403.shtml" > "$body"
+grep -Fq 'class="govuk-template govuk-template--rebranded"' "$body"
+grep -Fq 'href="/public/css/app.css"' "$body"
+grep -Fq 'src="/public/images/govuk-logo.svg"' "$body"
+if grep -Fq 'govuk-header__service-name' "$body"; then
+    echo "Unexpected service name on the proxy error page" >&2
+    exit 1
+fi
+grep -Fq 'href="/cookies"' "$body"
+grep -Fq 'href="/terms-and-conditions"' "$body"
+grep -Fq 'href="/accessibility"' "$body"
+test "$(curl -fsS "http://127.0.0.1:$http_port/public/css/app.css")" = test-css
+test "$(curl -fsS "http://127.0.0.1:$http_port/public/images/govuk-logo.svg")" = test-logo
+curl -fsS "http://127.0.0.1:$http_port/nginx-proxy/418.shtml" > "$body"
+grep -q 'fact, a teapot' "$body"
+if grep -Fq '/nginx-proxy/images/teapot.png' "$body"; then
+    echo "The 418 page references the removed teapot image" >&2
+    exit 1
+fi
 test "$(curl -fsS "http://127.0.0.1:$http_port/public/test.txt")" = public-asset-ok
 curl -fsSI "http://127.0.0.1:$http_port/public/test.txt" |
     grep -qi '^Cache-Control: max-age=86400'
 
 docker run -d --name "$json_proxy" --network "$network" -p 127.0.0.1::10080 \
+    -v "$public_dir:/public:ro" \
     -e PROXY_SERVICE_HOST="$upstream" -e PROXY_SERVICE_PORT=8080 \
     -e HTTPS_REDIRECT=FALSE -e ACCESS_LOG_FORMAT=extended_json "$image" >/dev/null
 json_port="$(port_for "$json_proxy" 10080)"
@@ -153,6 +175,7 @@ if printf '%s\n' "$json_log" | grep -Eq 'request_body|test-body-sample|response_
 fi
 
 docker run -d --name "$body_log_proxy" --network "$network" -p 127.0.0.1::10080 \
+    -v "$public_dir:/public:ro" \
     -e PROXY_SERVICE_HOST="$upstream" -e PROXY_SERVICE_PORT=8080 \
     -e HTTPS_REDIRECT=FALSE -e ACCESS_LOG_FORMAT=extended_json \
     -e LOG_REQUEST_BODY=TRUE "$image" >/dev/null
@@ -168,6 +191,7 @@ if printf '%s\n' "$body_log" | grep -Fq 'response_body'; then
 fi
 
 docker run -d --name "$text_log_proxy" --network "$network" -p 127.0.0.1::10080 \
+    -v "$public_dir:/public:ro" \
     -e PROXY_SERVICE_HOST="$upstream" -e PROXY_SERVICE_PORT=8080 \
     -e HTTPS_REDIRECT=FALSE -e ACCESS_LOG_FORMAT=extended_text \
     -e LOG_REQUEST_BODY=TRUE "$image" >/dev/null
@@ -179,6 +203,7 @@ text_log="$(docker logs "$text_log_proxy" 2>/dev/null | grep -F 'POST /text-log'
 printf '%s\n' "$text_log" | grep -Fq '"test-body-sample"'
 
 docker run -d --name "$limited_proxy" --network "$network" -p 127.0.0.1::10080 \
+    -v "$public_dir:/public:ro" \
     -e PROXY_SERVICE_HOST="$upstream" -e PROXY_SERVICE_PORT=8080 \
     -e HTTPS_REDIRECT=FALSE -e RATE_LIMIT_ENABLED=TRUE \
     -e REQS_PER_MIN_PER_IP=1 -e RATE_LIMIT_BURST=0 "$image" >/dev/null
@@ -187,15 +212,19 @@ wait_for_proxy "$limited_port"
 test "$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:$limited_port/ping")" = 200
 test "$(curl -fsS -o /dev/null -w '%{http_code}' "http://127.0.0.1:$limited_port/")" = 200
 test "$(curl -sS -o "$body" -w '%{http_code}' "http://127.0.0.1:$limited_port/")" = 429
-grep -q '<h2>429 Too many requests</h2>' "$body"
+grep -q '<h2 class="govuk-heading-m">429 Too many requests</h2>' "$body"
 test "$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:$limited_port/ping")" = 200
-curl -fsS "http://127.0.0.1:$limited_port/nginx-proxy/style/app.css" >/dev/null
+curl -fsS "http://127.0.0.1:$limited_port/nginx-proxy/429.shtml" >/dev/null
+test "$(curl -fsS "http://127.0.0.1:$limited_port/public/css/app.css")" = test-css
+test "$(curl -fsS "http://127.0.0.1:$limited_port/public/images/govuk-logo.svg")" = test-logo
 
 for code in 403 404 429 500 501 502 503 504; do
     status="$(curl -sS -o "$body" -w '%{http_code}' "http://127.0.0.1:$http_port/s$code")"
     test "$status" = "$code"
+    test "$(cat "$body")" = "upstream-$code"
+    curl -fsS "http://127.0.0.1:$http_port/nginx-proxy/$code.shtml" > "$body"
     grep -q 'GOV.UK' "$body"
-    grep -q "<h2>$code " "$body"
+    grep -q "<h2 class=\"govuk-heading-m\">$code " "$body"
     if grep -q '<!--#' "$body"; then
         echo "Error page $code contains unprocessed SSI directives" >&2
         exit 1
@@ -204,7 +233,7 @@ done
 
 status="$(curl -sS -o "$body" -w '%{http_code}' "http://127.0.0.1:$http_port/nginx-proxy/missing")"
 test "$status" = 404
-grep -q '<h1>Page not found</h1>' "$body"
+grep -q '<h1 class="govuk-heading-xl">Page not found</h1>' "$body"
 
 attack='?a=%3Cscript%3Ealert%281%29%3C%2Fscript%3E'
 status="$(curl -sS -o "$body" -w '%{http_code}' "http://127.0.0.1:$http_port/$attack")"
@@ -213,6 +242,7 @@ grep -q 'GOV.UK' "$body"
 grep -q 'support@example.org' "$body"
 
 docker run -d --name "$enhanced_proxy" --network "$network" -p 127.0.0.1::10080 \
+    -v "$public_dir:/public:ro" \
     -e PROXY_SERVICE_HOST="$upstream" -e PROXY_SERVICE_PORT=8080 \
     -e HTTPS_REDIRECT=FALSE -e GZIP_ENABLED=TRUE -e VERBOSE_ERROR_PAGES=TRUE \
     "$image" >/dev/null
@@ -223,10 +253,10 @@ test "$status" = 418
 grep -q 'ORIG URL:' "$body"
 grep -q 'Generated at' "$body"
 curl -sS -H 'Accept-Encoding: gzip' -o /dev/null -D "$body" \
-    "http://127.0.0.1:$enhanced_port/s404"
+    "http://127.0.0.1:$enhanced_port/nginx-proxy/404.shtml"
 grep -qi '^Content-Encoding: gzip' "$body"
 curl -sS -H 'Accept-Encoding: gzip' -o /dev/null -D "$body" \
-    "http://127.0.0.1:$http_port/s404"
+    "http://127.0.0.1:$http_port/nginx-proxy/404.shtml"
 if grep -qi '^Content-Encoding: gzip' "$body"; then
     echo "Gzip unexpectedly enabled by default" >&2
     exit 1
@@ -237,6 +267,7 @@ docker run --rm --user 0:0 --entrypoint /bin/sh -v "$rules_volume:/rules" "$imag
     -c 'printf "%s\n" '"'"'BasicRule wl:0 "mz:$ARGS_VAR:a";'"'"' > /rules/whitelist.rules'
 docker run -d --name "$whitelist" --network "$network" -p 127.0.0.1::10080 \
     -v "$rules_volume:/etc/nginx/naxsi.d:ro" \
+    -v "$public_dir:/public:ro" \
     -e PROXY_SERVICE_HOST="$upstream" -e PROXY_SERVICE_PORT=8080 \
     -e HTTPS_REDIRECT=FALSE "$image" >/dev/null
 whitelist_port="$(port_for "$whitelist" 10080)"
@@ -244,6 +275,7 @@ wait_for_proxy "$whitelist_port"
 test "$(curl -fsS "http://127.0.0.1:$whitelist_port/$attack")" = proxy-ok
 
 docker run -d --name "$environment_rules" --network "$network" -p 127.0.0.1::10080 \
+    -v "$public_dir:/public:ro" \
     -e PROXY_SERVICE_HOST="$upstream" -e PROXY_SERVICE_PORT=8080 \
     -e HTTPS_REDIRECT=FALSE -e 'EXTRA_NAXSI_RULES=BasicRule wl:0 "mz:$ARGS_VAR:a";' \
     "$image" >/dev/null
@@ -255,6 +287,7 @@ docker run --rm --user 0:0 --entrypoint /bin/sh -v "$rules_volume:/rules" "$imag
     -c 'printf "%s\n" "invalid directive;" > /rules/invalid.rules'
 if output="$(docker run --rm --network "$network" \
     -v "$rules_volume:/etc/nginx/naxsi.d:ro" \
+    -v "$public_dir:/public:ro" \
     -e PROXY_SERVICE_HOST="$upstream" -e PROXY_SERVICE_PORT=8080 "$image" 2>&1)"; then
     echo "Expected startup to fail with invalid mounted rules" >&2
     exit 1
@@ -262,6 +295,7 @@ fi
 printf '%s\n' "$output" | grep -q 'nginx: \[emerg\]'
 
 docker run -d --name "$redirect" --network "$network" -p 127.0.0.1::10080 \
+    -v "$public_dir:/public:ro" \
     -e PROXY_SERVICE_HOST="$upstream" -e PROXY_SERVICE_PORT=8080 "$image" >/dev/null
 redirect_port="$(port_for "$redirect" 10080)"
 wait_for_proxy "$redirect_port"
@@ -272,6 +306,7 @@ docker cp "$proxy:/etc/keys/crt" "$cert"
 chmod 644 "$cert"
 docker run -d --name "$tls_upstream" --network "$network" -p 127.0.0.1::10080 \
     -v "$cert:/etc/ssl/certs/ca-certificates.crt:ro" \
+    -v "$public_dir:/public:ro" \
     -e PROXY_SERVICE_HOST=https://test -e PROXY_SERVICE_PORT=10443 \
     -e HTTPS_REDIRECT=FALSE "$image" >/dev/null
 tls_port="$(port_for "$tls_upstream" 10080)"
@@ -279,14 +314,17 @@ wait_for_proxy "$tls_port"
 test "$(curl -fsS "http://127.0.0.1:$tls_port/")" = proxy-ok
 
 docker run -d --name "$untrusted_upstream" --network "$network" -p 127.0.0.1::10080 \
+    -v "$public_dir:/public:ro" \
     -e PROXY_SERVICE_HOST=https://test -e PROXY_SERVICE_PORT=10443 \
     -e HTTPS_REDIRECT=FALSE "$image" >/dev/null
 untrusted_port="$(port_for "$untrusted_upstream" 10080)"
 wait_for_proxy "$untrusted_port"
 test "$(curl -sS -o "$body" -w '%{http_code}' "http://127.0.0.1:$untrusted_port/")" = 502
+grep -q '<h2 class="govuk-heading-m">502 Bad gateway</h2>' "$body"
 
 docker run -d --name "$mismatched_upstream" --network "$network" -p 127.0.0.1::10080 \
     -v "$cert:/etc/ssl/certs/ca-certificates.crt:ro" \
+    -v "$public_dir:/public:ro" \
     -e PROXY_SERVICE_HOST="https://$proxy" -e PROXY_SERVICE_PORT=10443 \
     -e HTTPS_REDIRECT=FALSE "$image" >/dev/null
 mismatched_port="$(port_for "$mismatched_upstream" 10080)"
@@ -303,6 +341,7 @@ for setting in ALLOW_COUNTRY_CSV_2=GB DENY_COUNTRY_ON_2=TRUE LOCATIONS_CSV=/ \
     'EXTRA_NAXSI_RULES=invalid directive;' \
     PROXY_SERVICE_HOST='bad;host'; do
     if output="$(docker run --rm --network "$network" \
+        -v "$public_dir:/public:ro" \
         -e PROXY_SERVICE_HOST="$upstream" -e PROXY_SERVICE_PORT=8080 \
         -e "$setting" "$image" 2>&1)"; then
         echo "Expected startup to fail with invalid setting $setting" >&2
@@ -310,6 +349,24 @@ for setting in ALLOW_COUNTRY_CSV_2=GB DENY_COUNTRY_ON_2=TRUE LOCATIONS_CSV=/ \
     fi
     printf '%s\n' "$output" | grep -Eq 'ERROR:|nginx: \[emerg\]'
 done
+
+printf 'test-logo' > "$missing_public_dir/images/govuk-logo.svg"
+if output="$(docker run --rm --network "$network" \
+    -v "$missing_public_dir:/public:ro" \
+    -e PROXY_SERVICE_HOST="$upstream" -e PROXY_SERVICE_PORT=8080 "$image" 2>&1)"; then
+    echo "Expected startup to fail without the shared CSS" >&2
+    exit 1
+fi
+printf '%s\n' "$output" | grep -Fq 'Required shared asset /public/css/app.css'
+printf 'test-css' > "$missing_public_dir/css/app.css"
+: > "$missing_public_dir/images/govuk-logo.svg"
+if output="$(docker run --rm --network "$network" \
+    -v "$missing_public_dir:/public:ro" \
+    -e PROXY_SERVICE_HOST="$upstream" -e PROXY_SERVICE_PORT=8080 "$image" 2>&1)"; then
+    echo "Expected startup to fail with an empty shared logo" >&2
+    exit 1
+fi
+printf '%s\n' "$output" | grep -Fq 'Required shared asset /public/images/govuk-logo.svg'
 
 docker run --rm --entrypoint /bin/sh "$image" -c \
     'test ! -e /usr/local/bin/geoipupdate && ! apk info -e libmaxminddb-libs >/dev/null'
