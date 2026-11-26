@@ -70,12 +70,14 @@ absolute path containing the application's CSS and logo first:
 
 ```sh
 export PUBLIC_DIR=/absolute/path/to/app/public
+localhost_ip="$(docker run --rm --entrypoint getent hof-nginx:local ahostsv4 localhost | awk 'NR == 1 {print $1}')"
+: "${localhost_ip:?Unable to resolve IPv4 localhost}"
 docker network create hof-error-test
 docker run -d --name hof-error-app --network hof-error-test \
   -v "$PWD/tests/error-pages-app.js:/app.js:ro" \
   node:22-alpine node /app.js
 docker run -d --name hof-error-proxy --network hof-error-test \
-  -p 127.0.0.1:10080:10080 \
+  -p "$localhost_ip:10080:10080" \
   --mount "type=bind,src=$PUBLIC_DIR,dst=/public,readonly" \
   -e PROXY_SERVICE_HOST=hof-error-app -e PROXY_SERVICE_PORT=8080 \
   -e HTTPS_REDIRECT=FALSE hof-nginx:local
@@ -113,6 +115,7 @@ docker network rm hof-error-test
 | `RATE_LIMIT_ENABLED` | `FALSE` (default) disables rate limiting; set to `TRUE` to enable it. |
 | `REQS_PER_MIN_PER_IP` | Maximum proxied request rate per source IP when limiting is enabled; default 60 requests per minute. |
 | `RATE_LIMIT_BURST` | Excess requests allowed above the configured rate when limiting is enabled; default 20. Excess requests are delayed, and requests beyond the burst receive HTTP 429. Set to `0` to reject requests as soon as the rate is exceeded. |
+| `TRUSTED_PROXY_CIDRS` | Optional comma-separated list of trusted proxy IP addresses or CIDRs (IPv4 or IPv6). When set, resolve the client IP from `X-Forwarded-For` only for connections from these proxies. Empty by default. |
 | `ACCESS_LOG_FORMAT` | `combined` (default), `extended_text`, or `extended_json`. Access logs go to stdout. |
 | `LOG_REQUEST_BODY` | `FALSE` (default); set to `TRUE` to include request bodies in an extended access log. Requires `extended_text` or `extended_json`. |
 | `GZIP_ENABLED` | `FALSE` (default); set to `TRUE` to enable gzip compression. |
@@ -126,12 +129,28 @@ NGINX starts only if its generated configuration passes `nginx -t`. Upstream
 HTTPS verifies the server certificate and hostname using the system CA bundle,
 and sends SNI. For a private CA, provide a complete trusted CA bundle at
 `/etc/ssl/certs/ca-certificates.crt`. The proxy forwards the host without its
-port and adds standard `X-Forwarded-*` headers; it does not trust incoming
-forwarded headers to determine the client IP or protocol. Rate limiting uses
-the connection source IP seen by this NGINX container (`$remote_addr`), not
-`X-Forwarded-For`. The rate and burst are enforced independently by each
-container/pod, not shared across replicas. When enabled, rate limiting applies
-to proxied application requests; `/ping` and `/nginx-proxy/` assets are exempt.
+port and adds standard `X-Forwarded-*` headers.
+
+By default, rate limiting uses the connection source IP (`$remote_addr`),
+which may be an ingress pod shared by many users. To use client IPs behind
+trusted proxies, set `TRUSTED_PROXY_CIDRS` to their actual source addresses
+or networks as a comma-separated list. The proxy configures
+NGINX to read `X-Forwarded-For` from trusted peers and select the last
+non-trusted address in the chain. An untrusted peer's header is ignored; if
+the header is absent or unusable, its connection address is used. This also
+changes `$remote_addr` in access logs and the `X-Real-IP` sent to the app.
+It does not trust a forwarded protocol.
+
+Only trust addresses controlled by proxies that sanitize or correctly append
+`X-Forwarded-For`. A broad pod CIDR may include untrusted workloads and permit
+IP spoofing or rate-limit bypass. Verify the complete ingress chain and
+network access before enabling this setting. If migrating from equivalent
+directives in `ADD_NGINX_SERVER_CFG`, remove those directives first to avoid
+duplicate configuration.
+
+The rate and burst are enforced independently by each container/pod, not
+shared across replicas. When enabled, rate limiting applies to proxied
+application requests; `/ping` and `/nginx-proxy/` assets are exempt.
 
 Mount a real server certificate and key readable by UID 1000 for production. If
 both default files are absent, the container generates a self-signed
@@ -165,13 +184,21 @@ failed health check makes the probe fail, which may restart the container.
 The default is NGINX's combined access log. Select `extended_text` or
 `extended_json` with `ACCESS_LOG_FORMAT` for extended details. The JSON format
 uses NGINX's JSON escaping and records the available proxy, request, upstream,
-timing and TLS fields as strings. `http_x_forwarded_for` is an untrusted
-incoming header; `remote_addr` is the immediate connection source. The legacy
-country, UUID and response-body fields are not provided. `/ping` access logs
-remain disabled, and errors go to stderr.
+timing and TLS fields as strings. Without real-IP configuration, `remote_addr`
+and `remote_port` identify the immediate connection to the sidecar, often an
+ingress pod or another proxy rather than the user's device.
+`http_x_forwarded_for` may contain the client IP observed by the ingress and
+other proxy addresses, but can also contain untrusted values. Do not treat it
+as a verified client IP unless the proxy chain is configured and trusted.
 
-JSON fields include the client connection port (`remote_port`), NGINX listening
-port (`server_port`), upstream address and port (`upstream_addr`), user agent
+With trusted proxies configured, `remote_addr` is the resolved client address.
+`remote_port` may be empty if the forwarded address does not include a port;
+even when present, it may be a NAT port rather than the user's device port.
+The legacy country, UUID and response-body fields are not provided. `/ping`
+access logs remain disabled, and errors go to stderr.
+
+Other JSON fields include the NGINX listening port (`server_port`), upstream
+address and port (`upstream_addr`), user agent
 (`http_user_agent`), host (`http_host`), scheme and original request path and
 query string (`request_uri`). Ports reflect the connections seen by NGINX, not
 necessarily those used before an ingress proxy.
@@ -302,18 +329,47 @@ continue to use the proxy error pages.
 
 ## GitHub Actions and vulnerability scanning
 
+```mermaid
+flowchart TD
+    PR["PR targeting main"] --> Checkout["Checkout source"]
+    Branch["Push to main or feature/*"] --> Checkout
+    Tag["Push a Git tag"] --> Checkout
+    Checkout --> IsTag{"Tag push?"}
+    IsTag -->|Yes| Validate["Validate tag and main ancestry"]
+    Validate -->|Invalid| Failed["Job fails; later steps are skipped"]
+    Validate -->|Valid| Setup["Set up ARM64 emulation, Buildx and ECR login"]
+    IsTag -->|No| Setup
+    Setup --> Build["Build AMD64, then ARM64"]
+    Build --> ScanAMD["Scan AMD64"]
+    ScanAMD -->|Pass| ScanARM["Scan ARM64"]
+    ScanAMD -->|Fail| Failed
+    ScanARM -->|Pass| PushAMD["Push AMD64 image and record digest"]
+    ScanARM -->|Fail| Failed
+    PushAMD --> PushARM["Push ARM64 image and record digest"]
+    PushARM --> Manifest["Publish and verify multi-architecture manifest<br/>SHA tag, plus Git tag for releases"]
+    Manifest --> Release{"Tag push?"}
+    Release -->|Yes| Slack["Notify Slack with verified image reference"]
+    Release -->|No| Done["Workflow complete"]
+    Slack --> Done
+```
+
 [Build, scan and push](.github/workflows/build-scan-push.yml) builds and scans
 separate Linux AMD64 and ARM64 images. Only if both scans succeed, it pushes
 them to the configured `sas/hof-nginx` AWS ECR repository in `eu-west-2` and
 publishes a multi-architecture manifest referencing their exact pushed digests.
-It runs on pushes to `main` or `feature/*` and PRs targeting `main`. The image
-tag is `github.sha`: the pushed commit SHA for a push, or GitHub's merge commit
-SHA for a PR. The manifest uses that tag; the per-architecture images use
-`-amd64` and `-arm64` suffixes. It does not update `latest`. Deploy the manifest
-image reference printed by the push step and shown in the job summary to select
-the appropriate architecture automatically; the image config digest is not a
-deployable image reference. GitHub may mask values configured as secrets in
-the output, including the AWS region.
+Separate push steps log the AMD64 and ARM64 image references and digests.
+The following manifest step logs the platform manifests and the deployable
+multi-architecture reference.
+It runs on pushes to `main` or `feature/*`, tags, and PRs targeting `main`.
+The image tag is `github.sha`: the pushed commit SHA for a push, or GitHub's
+merge commit SHA for a PR. The manifest uses that tag; the per-architecture
+images use `-amd64` and `-arm64` suffixes. For a tag push, the tag must be a
+valid Docker tag and point to a commit on `main`; the verified manifest is
+also published with the Git tag. It does not update `latest`. Deploy the
+manifest image reference printed by the push step and shown in the job summary
+to select the appropriate architecture automatically; the image config digest
+is not a deployable image reference. GitHub may mask values configured as
+secrets in the output, including the AWS region.
 
 The workflow requires the Actions secrets `AWS_ACCESS_KEY_ID`,
 `AWS_SECRET_ACCESS_KEY` and `AWS_REGION` (set to `eu-west-2`). The credentials
@@ -321,13 +377,66 @@ must be for the configured registry's account and have permission to log in and
 push to the existing repository. Forked PRs do not receive repository secrets;
 Dependabot PRs need separately configured Dependabot secrets.
 
+After a successful tag release, a separate job posts the verified image
+reference, commit and workflow run to Slack and mentions the HOF teams.
+Configure the `SLACK_WEBHOOK_URL` Actions secret with an incoming webhook
+for the intended channel. A missing secret or failed notification fails the
+notification job; it does not undo an image already pushed to ECR.
+
+### Creating a release
+
+Use [Semantic Versioning](https://semver.org/) with the convention
+`vMAJOR.MINOR.PATCH`:
+
+- **MAJOR:** incompatible changes, such as a breaking configuration change.
+- **MINOR:** backward-compatible functionality.
+- **PATCH:** backward-compatible fixes.
+
+For example, after `v1.2.3`, a fix could be `v1.2.4` and a compatible feature
+could be `v1.3.0`. Versions starting with `v0` are for initial development and
+may include breaking changes in minor releases. Pre-release tags such as
+`v1.3.0-rc.1` also trigger the release workflow. The `v` prefix is a Git tag
+convention; it is not part of the SemVer version itself.
+
+Choose a new version after reviewing the changes and existing tags. The
+workflow checks Docker tag syntax, not SemVer: avoid SemVer build metadata
+containing `+`, which is not valid in a Docker tag. Do not reuse or move an
+existing release tag.
+
+After these workflow changes are merged to `main`, create and push an annotated
+tag pointing to that commit or a later `main` commit:
+
+```sh
+git fetch origin main
+git fetch origin --tags
+git tag --list 'v*' --sort=-v:refname
+RELEASE_TAG=v1.2.3 # Replace with the next release version.
+git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG" origin/main
+git push origin "$RELEASE_TAG"
+```
+
+The tag push runs the build and scans again, then publishes the verified
+multi-architecture image with the Git tag as its Docker tag and notifies
+Slack. Publishing to ECR does not deploy the image. After the workflow
+succeeds, you can optionally create a GitHub Release with generated notes:
+
+```sh
+gh release create "$RELEASE_TAG" --verify-tag --generate-notes
+```
+
+Creating the GitHub Release for an existing tag does not trigger a second
+tag-push workflow.
+
+GitHub runs the workflow from the tagged commit, so a tag pointing to an older
+commit without the tag-enabled workflow will not run this release process.
+Deleting a tag does not publish an image or send a notification.
+
 The Home Office Trivy scanner checks OS and language packages for HIGH and
 CRITICAL vulnerabilities in each architecture and fails the job if it finds
 any. The exact local images scanned are pushed without rebuilding. The active
-job does **not** run smoke tests, scan MEDIUM findings or send Slack notifications. The previous
-reusable workflow and notification jobs remain commented out. Run `make test`
-and `make scan` locally; arrange the required automated checks before using
-this as a production release.
+job does **not** run smoke tests or scan MEDIUM findings. Run `make test` and
+`make scan` locally; arrange the required automated checks before using this as
+a production release.
 
 [Dependabot](.github/dependabot.yml) checks the Alpine base image daily and
 GitHub Actions dependencies weekly, following `hof-nodejs`. It can propose

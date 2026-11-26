@@ -48,9 +48,26 @@ HTTPS_LISTEN_PORT=${HTTPS_LISTEN_PORT:-10443}
 RATE_LIMIT_ENABLED=${RATE_LIMIT_ENABLED:-FALSE}
 REQS_PER_MIN_PER_IP=${REQS_PER_MIN_PER_IP:-60}
 RATE_LIMIT_BURST=${RATE_LIMIT_BURST:-20}
+TRUSTED_PROXY_CIDRS=${TRUSTED_PROXY_CIDRS:-}
 validate_port PROXY_SERVICE_PORT "$PROXY_SERVICE_PORT"
 validate_port HTTP_LISTEN_PORT "$HTTP_LISTEN_PORT"
 validate_port HTTPS_LISTEN_PORT "$HTTPS_LISTEN_PORT"
+
+: > /var/lib/nginx/runtime/real-ip.conf
+if [ -n "$TRUSTED_PROXY_CIDRS" ]; then
+    case "$TRUSTED_PROXY_CIDRS" in
+        *[!0-9a-fA-F:.,/]*) fail "TRUSTED_PROXY_CIDRS must be a comma-separated list of IP addresses or CIDRs." ;;
+    esac
+    printf '%s\n' "$TRUSTED_PROXY_CIDRS" |
+        grep -Eq '^(([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+|[0-9a-fA-F:]*:[0-9a-fA-F:.]*)(/[0-9]{1,3})?)(,([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+|[0-9a-fA-F:]*:[0-9a-fA-F:.]*)(/[0-9]{1,3})?)*$' ||
+        fail "TRUSTED_PROXY_CIDRS must be a comma-separated list of IP addresses or CIDRs."
+    printf '%s\n' "$TRUSTED_PROXY_CIDRS" | tr ',' '\n' |
+        while IFS= read -r proxy; do
+            printf 'set_real_ip_from %s;\n' "$proxy"
+        done > /var/lib/nginx/runtime/real-ip.conf
+    printf 'real_ip_header X-Forwarded-For;\nreal_ip_recursive on;\n' \
+        >> /var/lib/nginx/runtime/real-ip.conf
+fi
 
 ACCESS_LOG_FORMAT=${ACCESS_LOG_FORMAT:-combined}
 case "$ACCESS_LOG_FORMAT" in

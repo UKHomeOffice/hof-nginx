@@ -26,8 +26,10 @@ run: build
 	@: "$${PROXY_SERVICE_HOST:?Set PROXY_SERVICE_HOST to the upstream host}"
 	@: "$${PROXY_SERVICE_PORT:?Set PROXY_SERVICE_PORT to the upstream port}"
 	@: "$${PUBLIC_DIR:?Set PUBLIC_DIR to the absolute path of the application public directory}"
-	docker run --rm \
-	  -p "127.0.0.1:$$HTTP_PORT:10080" -p "127.0.0.1:$$HTTPS_PORT:10443" \
+	@localhost_ip="$$(docker run --rm --entrypoint getent "$$IMAGE" ahostsv4 localhost | awk 'NR == 1 {print $$1}')"; \
+	  : "$${localhost_ip:?Unable to resolve IPv4 localhost}"; \
+	  docker run --rm \
+	  -p "$$localhost_ip:$$HTTP_PORT:10080" -p "$$localhost_ip:$$HTTPS_PORT:10443" \
 	  --mount "type=bind,src=$$PUBLIC_DIR,dst=/public,readonly" \
 	  -e PROXY_SERVICE_HOST -e PROXY_SERVICE_PORT -e HTTPS_REDIRECT \
 	  -e "HTTPS_REDIRECT_PORT=$$HTTPS_PORT" "$$IMAGE"

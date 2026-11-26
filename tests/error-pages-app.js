@@ -1,7 +1,7 @@
 const http = require('node:http');
 
 const errorCodes = [403, 404, 429, 500, 501, 502, 503, 504];
-const host = process.env.HOST || '0.0.0.0';
+const host = process.env.HOST;
 const port = Number(process.env.PORT ?? 8080);
 
 http.createServer((req, res) => {
@@ -26,5 +26,5 @@ http.createServer((req, res) => {
 <ul>${errorCodes.map(code => `<li><a href="/status/${code}">HTTP ${code}</a></li>`).join('')}</ul>
 </body></html>`);
 }).listen(port, host, function () {
-  console.log(`Error page test app listening on ${host}:${this.address().port}`);
+  console.log(`Error page test app listening on ${host || 'all interfaces'}:${this.address().port}`);
 });

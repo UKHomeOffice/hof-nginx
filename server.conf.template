@@ -17,6 +17,7 @@ server {
     add_header X-Content-Type-Options nosniff always;
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
+    include /var/lib/nginx/runtime/real-ip.conf;
     include /var/lib/nginx/runtime/extra-server.conf;
 
     error_page 403 /nginx-proxy/403.shtml;

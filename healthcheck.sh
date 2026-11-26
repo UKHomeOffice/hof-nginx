@@ -28,9 +28,9 @@ if [ "$((now - last_reload))" -gt "$NGINX_RELOAD_INTERVAL" ]; then
     touch "$reload_file"
 fi
 
-status=$(curl --head --silent --show-error --insecure --max-time 5 \
+status=$(curl --head --silent --show-error --insecure --ipv4 --noproxy '*' --max-time 5 \
     --output /dev/null --write-out '%{http_code}' \
-    "https://127.0.0.1:$HTTPS_LISTEN_PORT/ping")
+    "https://localhost:$HTTPS_LISTEN_PORT/ping")
 if [ "$status" != 200 ]; then
     echo "ERROR: NGINX health check returned HTTP $status." >&2
     exit 1

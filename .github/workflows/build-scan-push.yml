@@ -5,27 +5,53 @@ on:
     branches: [main]
   push:
     branches: [main, 'feature/*']
+    tags: ['*']
 
 jobs:
+  # Build, scan and publish the architecture images and multi-architecture manifest.
   build-and-push:
+    if: github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/') || github.event.deleted != true
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      image_reference: ${{ steps.push.outputs.image_reference }}
     steps:
+      # Fetch the source and full history needed to validate release tags.
       - name: Checkout source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
 
+      # Ensure release tags are valid Docker tags and point to a main commit.
+      - name: Validate release tag
+        id: release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          if [[ ! "$GITHUB_REF_NAME" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ ]]; then
+            echo "::error::Release tag is not a valid Docker image tag."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "::error::Release tag must point to a commit on main."
+            exit 1
+          fi
+          printf 'tag=%s\n' "$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+
+      # Enable ARM64 builds on the hosted runner.
       - name: Set up ARM64 emulation
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
         with:
           image: tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
           platforms: arm64
 
+      # Configure Docker Buildx for architecture-specific builds.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
+      # Authenticate the workflow to AWS using repository secrets.
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
@@ -33,10 +59,12 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
+      # Log Docker in to the AWS ECR registry.
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@7290e214a610b32bc0eef81748948b6d466a8783 # v2
 
+      # Build and load separately tagged AMD64 and ARM64 images.
       - name: Build and tag architecture images
         id: image
         env:
@@ -57,33 +85,70 @@ jobs:
           echo "amd64=$image-amd64" >> "$GITHUB_OUTPUT"
           echo "arm64=$image-arm64" >> "$GITHUB_OUTPUT"
 
+      # Scan the AMD64 image before publishing it.
       - name: Scan AMD64 image for vulnerabilities
         uses: UKHomeOffice/core-cloud-workflow-docker-actions/actions/scan@9652fa25cc2a7e4f22b34b95e9e31a7424be92bf # main, 2026-11-24
         with:
           image: ${{ steps.image.outputs.amd64 }}
 
+      # Scan the ARM64 image before publishing it.
       - name: Scan ARM64 image for vulnerabilities
         uses: UKHomeOffice/core-cloud-workflow-docker-actions/actions/scan@9652fa25cc2a7e4f22b34b95e9e31a7424be92bf # main, 2026-11-24
         with:
           image: ${{ steps.image.outputs.arm64 }}
 
-      - name: Push scanned images and multi-architecture manifest
+      # Push the AMD64 image to ECR and record its digest.
+      - name: Push AMD64 image
+        id: push-amd64
         env:
-          IMAGE: ${{ steps.image.outputs.image }}
-          IMAGE_AMD64: ${{ steps.image.outputs.amd64 }}
-          IMAGE_ARM64: ${{ steps.image.outputs.arm64 }}
+          IMAGE: ${{ steps.image.outputs.amd64 }}
         run: |
           set -euo pipefail
           push_log="$(mktemp)"
           trap 'rm -f "$push_log"' EXIT
+          printf 'Pushing AMD64 image: %s\n' "$IMAGE"
+          docker push "$IMAGE" | tee "$push_log"
+          digest="$(sed -n 's/.*digest: \(sha256:[0-9a-f]*\) size:.*/\1/p' "$push_log")"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Could not determine the pushed AMD64 image digest."
+            exit 1
+          fi
+          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+          printf 'Pushed AMD64 image reference: %s@%s\n' "$IMAGE" "$digest"
 
-          docker push "$IMAGE_AMD64" | tee "$push_log"
-          amd64_digest="$(sed -n 's/.*digest: \(sha256:[0-9a-f]*\) size:.*/\1/p' "$push_log")"
-          docker push "$IMAGE_ARM64" | tee "$push_log"
-          arm64_digest="$(sed -n 's/.*digest: \(sha256:[0-9a-f]*\) size:.*/\1/p' "$push_log")"
-          if [[ ! "$amd64_digest" =~ ^sha256:[0-9a-f]{64}$ ]] ||
-             [[ ! "$arm64_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "Could not determine both pushed image digests." >&2
+      # Push the ARM64 image to ECR and record its digest.
+      - name: Push ARM64 image
+        id: push-arm64
+        env:
+          IMAGE: ${{ steps.image.outputs.arm64 }}
+        run: |
+          set -euo pipefail
+          push_log="$(mktemp)"
+          trap 'rm -f "$push_log"' EXIT
+          printf 'Pushing ARM64 image: %s\n' "$IMAGE"
+          docker push "$IMAGE" | tee "$push_log"
+          digest="$(sed -n 's/.*digest: \(sha256:[0-9a-f]*\) size:.*/\1/p' "$push_log")"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Could not determine the pushed ARM64 image digest."
+            exit 1
+          fi
+          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+          printf 'Pushed ARM64 image reference: %s@%s\n' "$IMAGE" "$digest"
+
+      # Publish and verify the manifest that points to both architecture images.
+      # Uploads a small index that points to both images. When someone pulls that reference, Docker selects the right architecture automatically.
+      - name: Publish multi-architecture manifest
+        id: push
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          AMD64_DIGEST: ${{ steps.push-amd64.outputs.digest }}
+          ARM64_DIGEST: ${{ steps.push-arm64.outputs.digest }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$AMD64_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+             [[ ! "$ARM64_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Pushed architecture image digests are missing or invalid."
             exit 1
           fi
 
@@ -97,10 +162,16 @@ jobs:
                  | if length == 1 then .[0] else error("Expected one matching platform manifest") end
                else $digest end'
           }
-          amd64_manifest="$(platform_digest "$amd64_digest" amd64)"
-          arm64_manifest="$(platform_digest "$arm64_digest" arm64)"
-          docker buildx imagetools create --tag "$IMAGE" \
-            "$repository@$amd64_digest" "$repository@$arm64_digest"
+          amd64_manifest="$(platform_digest "$AMD64_DIGEST" amd64)"
+          arm64_manifest="$(platform_digest "$ARM64_DIGEST" arm64)"
+          printf 'AMD64 platform manifest: %s@%s\n' "$repository" "$amd64_manifest"
+          printf 'ARM64 platform manifest: %s@%s\n' "$repository" "$arm64_manifest"
+          tags=(--tag "$IMAGE")
+          if [[ -n "$RELEASE_TAG" ]]; then
+            tags+=(--tag "$repository:$RELEASE_TAG")
+          fi
+          docker buildx imagetools create "${tags[@]}" \
+            "$repository@$AMD64_DIGEST" "$repository@$ARM64_DIGEST"
           index_digest="$(docker buildx imagetools inspect "$IMAGE" --format '{{.Manifest.Digest}}')"
           if [[ ! "$index_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
             echo "Could not determine the multi-architecture manifest digest." >&2
@@ -111,34 +182,43 @@ jobs:
             --arg amd64 "$amd64_manifest" --arg arm64 "$arm64_manifest" \
             'any(.manifests[]; .digest == $amd64 and .platform.os == "linux" and .platform.architecture == "amd64")
             and any(.manifests[]; .digest == $arm64 and .platform.os == "linux" and .platform.architecture == "arm64")'
+          if [[ -n "$RELEASE_TAG" ]]; then
+            release_image="$repository:$RELEASE_TAG"
+            release_digest="$(docker buildx imagetools inspect "$release_image" --format '{{.Manifest.Digest}}')"
+            if [[ "$release_digest" != "$index_digest" ]]; then
+              echo "::error::Release tag does not reference the verified image manifest."
+              exit 1
+            fi
+            image_reference="$release_image@$index_digest"
+          fi
           docker buildx imagetools inspect "$image_reference"
+          printf 'image_reference=%s\n' "$image_reference" >> "$GITHUB_OUTPUT"
           printf 'Deployable multi-architecture image: %s\n' "$image_reference" | tee -a "$GITHUB_STEP_SUMMARY"
 
-
+  # Notify Slack after a successful tagged release.
   notify:
-    name: Notify Slack of  image
-    needs: build-scan-prod
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    name: Notify Slack of released image
+    needs: build-and-push
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions: {}
     steps:
+      # Post the verified release image reference and links to Slack.
       - name: Send release notification
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          IMAGE_REFERENCE: ${{ needs.build-and-push.outputs.image_reference }}
         run: |
-          - echo "$${DOCKER_PASSWORD}" | docker login -u "ukhomeofficedigital+hof_nodejs" --password-stdin quay.io
-          - |
-              IMAGE="$${IMAGE_URL}/$${IMAGE_REPO}:$${DRONE_TAG}"
-              DIGEST=$(docker buildx imagetools inspect "$${IMAGE}" --format '{{ .Manifest.Digest }}')
-              # Drone's command trace evaluates literal backticks, so build them from octal
-              BT=$(printf '\140')
-              cat > .slack_template <<EOF
-              *✔ New hof-nginx image released:* $${BT}$${IMAGE}@$${DIGEST}$${BT}
-
-              <!subteam^S04P405F3UY|@hof-devs> <!subteam^S04P42A009E|@hof-devops> <!subteam^S04P412M6M6|@hof-qat>
-      
-              React with :done_tick: once Confluence has been updated with the latest image URL and tag.
-
-              Commit <https://github.com/{{ repo.owner }}/{{ repo.name }}/commit/{{ build.commit }}|{{ truncate build.commit 8 }}> | <https://quay.io/repository/ukhomeofficedigital/hof-nodejs?tab=tags|Quay tags> | *Build <{{build.link}}|#{{build.number}}>*
-              EOF
-              cat .slack_template
+          set -euo pipefail
+          : "${SLACK_WEBHOOK_URL:?Configure the SLACK_WEBHOOK_URL Actions secret}"
+          : "${IMAGE_REFERENCE:?The release image reference is missing}"
+          message=$(printf '*New hof-nginx image released:* `%s`\n\n<!subteam^S04P405F3UY|@hof-devs> <!subteam^S04P42A009E|@hof-devops> <!subteam^S04P412M6M6|@hof-qat>\n\nReact with :done_tick: once Confluence has been updated with the latest image URL and tag.\n\nCommit <%s/%s/commit/%s|%.8s> | <https://eu-west-2.console.aws.amazon.com/ecr/repositories?region=eu-west-2|ECR repositories> | *Build <%s/%s/actions/runs/%s|#%s>*' \
+            "$IMAGE_REFERENCE" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_SHA" \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER")
+          payload=$(jq -n --arg text "$message" '{text: $text}')
+          response=$(curl --fail-with-body --silent --show-error --retry 3 \
+            -H 'Content-Type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL")
+          if [[ "$response" != ok ]]; then
+            echo "::error::Slack webhook returned an unexpected response."
+            exit 1
+          fi
