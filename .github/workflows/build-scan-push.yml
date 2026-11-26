@@ -113,54 +113,32 @@ jobs:
             and any(.manifests[]; .digest == $arm64 and .platform.os == "linux" and .platform.architecture == "arm64")'
           docker buildx imagetools inspect "$image_reference"
           printf 'Deployable multi-architecture image: %s\n' "$image_reference" | tee -a "$GITHUB_STEP_SUMMARY"
-    
-  # build-scan-hofnotprod:
-  #   if: github.event_name == 'pull_request'
-  #   permissions:
-  #     contents: read
-  #     id-token: write
-  #   uses: Home-Office-Digital/core-cloud-workflow-docker-actions/.github/workflows/build-scan-push.yml@d88259dc123eb3fa4c1702e3dfa95473814703a7 # 1.4.0
-  #   with:
-  #     working_directory: "."
-  #     dockerfile: Dockerfile
-  #     image_name: hof/hof-nginx
-  #     image_tag: ${{ format('pr-{0}-{1}', github.event.pull_request.number, github.sha) }}
-  #     tag_latest: true
-  #   secrets:
-  #     AWS_ECR_ACCOUNT_ID: ${{ secrets.AWS_ECR_ACCOUNT_ID }}
-  #     ROLE_TO_ASSUME: ${{ secrets.ROLE_TO_ASSUME }}
 
-  # build-scan-prod:
-  #   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-  #   permissions:
-  #     contents: read
-  #     id-token: write
-  #   uses: Home-Office-Digital/core-cloud-workflow-docker-actions/.github/workflows/build-scan-push.yml@d88259dc123eb3fa4c1702e3dfa95473814703a7 # 1.4.0
-  #   with:
-  #     working_directory: "."
-  #     dockerfile: Dockerfile
-  #     image_name: hof/hof-nginx
-  #     image_tag: ${{ github.sha }}
-  #     tag_latest: true
-  #   secrets:
-  #     AWS_ECR_ACCOUNT_ID: ${{ secrets.HOFPROD_AWS_ECR_ACCOUNT_ID }}
-  #     ROLE_TO_ASSUME: ${{ secrets.HOFPROD_ROLE_TO_ASSUME }}
 
-  # notify:
-  #   name: Notify Slack of production image
-  #   needs: build-scan-prod
-  #   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-  #   runs-on: ubuntu-latest
-  #   permissions: {}
-  #   steps:
-  #     - name: Send release notification
-  #       env:
-  #         SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-  #       run: |
-  #         set -eu
-  #         : "${SLACK_WEBHOOK_URL:?SLACK_WEBHOOK_URL is required}"
-  #         payload="$(jq -n --arg tag "$GITHUB_SHA" \
-  #           --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-  #           '{text: ("New production ECR image available: hof/hof-nginx:" + $tag + "\n" + $run)}')"
-  #         curl --fail-with-body --silent --show-error --retry 3 \
-  #           -H 'Content-Type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL"
+  notify:
+    name: Notify Slack of  image
+    needs: build-scan-prod
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Send release notification
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          - echo "$${DOCKER_PASSWORD}" | docker login -u "ukhomeofficedigital+hof_nodejs" --password-stdin quay.io
+          - |
+              IMAGE="$${IMAGE_URL}/$${IMAGE_REPO}:$${DRONE_TAG}"
+              DIGEST=$(docker buildx imagetools inspect "$${IMAGE}" --format '{{ .Manifest.Digest }}')
+              # Drone's command trace evaluates literal backticks, so build them from octal
+              BT=$(printf '\140')
+              cat > .slack_template <<EOF
+              *✔ New hof-nginx image released:* $${BT}$${IMAGE}@$${DIGEST}$${BT}
+
+              <!subteam^S04P405F3UY|@hof-devs> <!subteam^S04P42A009E|@hof-devops> <!subteam^S04P412M6M6|@hof-qat>
+      
+              React with :done_tick: once Confluence has been updated with the latest image URL and tag.
+
+              Commit <https://github.com/{{ repo.owner }}/{{ repo.name }}/commit/{{ build.commit }}|{{ truncate build.commit 8 }}> | <https://quay.io/repository/ukhomeofficedigital/hof-nodejs?tab=tags|Quay tags> | *Build <{{build.link}}|#{{build.number}}>*
+              EOF
+              cat .slack_template

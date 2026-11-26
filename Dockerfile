@@ -20,4 +20,5 @@ RUN chmod +x /entrypoint.sh /healthcheck.sh
 
 USER 1000
 EXPOSE 10080 10443
+STOPSIGNAL SIGQUIT
 ENTRYPOINT ["/entrypoint.sh"]
