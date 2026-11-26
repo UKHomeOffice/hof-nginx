@@ -5,6 +5,7 @@ image="${1:-hof-nginx:local}"
 network="hof-nginx-test-$$"
 upstream="hof-nginx-upstream-$$"
 proxy="hof-nginx-proxy-$$"
+system_resolved_proxy="hof-nginx-system-resolved-proxy-$$"
 limited_proxy="hof-nginx-limited-proxy-$$"
 json_proxy="hof-nginx-json-proxy-$$"
 body_log_proxy="hof-nginx-body-log-proxy-$$"
@@ -39,13 +40,13 @@ location /public {
 cleanup() {
     local status=$?
     if [ "$status" -ne 0 ]; then
-        for container in "$proxy" "$limited_proxy" "$json_proxy" "$body_log_proxy" "$text_log_proxy" "$enhanced_proxy" "$whitelist" "$environment_rules" "$redirect" "$tls_upstream" "$untrusted_upstream" "$mismatched_upstream" "$upstream"; do
+        for container in "$proxy" "$system_resolved_proxy" "$limited_proxy" "$json_proxy" "$body_log_proxy" "$text_log_proxy" "$enhanced_proxy" "$whitelist" "$environment_rules" "$redirect" "$tls_upstream" "$untrusted_upstream" "$mismatched_upstream" "$upstream"; do
             if docker container inspect "$container" >/dev/null 2>&1; then
                 docker logs "$container" >&2 || true
             fi
         done
     fi
-    docker rm -f "$proxy" "$limited_proxy" "$json_proxy" "$body_log_proxy" "$text_log_proxy" "$enhanced_proxy" "$whitelist" "$environment_rules" "$redirect" "$tls_upstream" "$untrusted_upstream" "$mismatched_upstream" "$upstream" >/dev/null 2>&1 || true
+    docker rm -f "$proxy" "$system_resolved_proxy" "$limited_proxy" "$json_proxy" "$body_log_proxy" "$text_log_proxy" "$enhanced_proxy" "$whitelist" "$environment_rules" "$redirect" "$tls_upstream" "$untrusted_upstream" "$mismatched_upstream" "$upstream" >/dev/null 2>&1 || true
     docker network rm "$network" >/dev/null 2>&1 || true
     docker volume rm "$rules_volume" >/dev/null 2>&1 || true
     rm -f "$body" "$cert" "$public_dir/test.txt"
@@ -122,6 +123,14 @@ if docker exec -e NGINX_RELOAD_INTERVAL=invalid "$proxy" /healthcheck.sh >/dev/n
 fi
 test "$(curl -fsS "http://127.0.0.1:$http_port/")" = proxy-ok
 test "$(curl -kfsS "https://127.0.0.1:$https_port/")" = proxy-ok
+upstream_ip="$(docker inspect -f "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}" "$upstream")"
+docker run -d --name "$system_resolved_proxy" --network "$network" \
+    --add-host "upstream-host.test:$upstream_ip" -p 127.0.0.1::10080 \
+    -e PROXY_SERVICE_HOST=upstream-host.test -e PROXY_SERVICE_PORT=8080 \
+    -e HTTPS_REDIRECT=FALSE "$image" >/dev/null
+system_resolved_port="$(port_for "$system_resolved_proxy" 10080)"
+wait_for_proxy "$system_resolved_port"
+test "$(curl -fsS "http://127.0.0.1:$system_resolved_port/")" = proxy-ok
 test "$(curl -fsS -H 'X_Custom_Header: header-ok' "http://127.0.0.1:$http_port/headers")" = header-ok
 test "$(curl -fsS -H 'Upgrade: websocket' -H 'Connection: Upgrade' \
     "http://127.0.0.1:$http_port/upgrade")" = 'HTTP/1.1|websocket|upgrade'

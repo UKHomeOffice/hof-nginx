@@ -9,7 +9,6 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
 
     resolver ${NAME_RESOLVER} ipv6=off;
-    set $backend_upstream "${UPSTREAM_URL}";
     set $verbose_error_pages "${VERBOSE_ERROR_PAGES}";
     set $feedback_email "${FEEDBACK_EMAIL}";
 
@@ -67,8 +66,9 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_ssl_server_name on;
+        proxy_ssl_name ${UPSTREAM_HOST};
         proxy_ssl_verify on;
         proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
-        proxy_pass $backend_upstream;
+        proxy_pass ${UPSTREAM_URL};
     }
 }
