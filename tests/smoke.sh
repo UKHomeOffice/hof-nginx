@@ -15,6 +15,7 @@ json_proxy="hof-nginx-json-proxy-$$"
 body_log_proxy="hof-nginx-body-log-proxy-$$"
 text_log_proxy="hof-nginx-text-log-proxy-$$"
 enhanced_proxy="hof-nginx-enhanced-proxy-$$"
+optional_assets_proxy="hof-nginx-optional-assets-proxy-$$"
 whitelist="hof-nginx-whitelist-$$"
 environment_rules="hof-nginx-env-rules-$$"
 redirect="hof-nginx-redirect-$$"
@@ -50,13 +51,13 @@ location /public {
 cleanup() {
     local status=$?
     if [ "$status" -ne 0 ]; then
-        for container in "$proxy" "$limited_proxy" "$trusted_proxy" "$json_proxy" "$body_log_proxy" "$text_log_proxy" "$enhanced_proxy" "$whitelist" "$environment_rules" "$redirect" "$tls_upstream" "$untrusted_upstream" "$mismatched_upstream" "$upstream"; do
+        for container in "$proxy" "$limited_proxy" "$trusted_proxy" "$json_proxy" "$body_log_proxy" "$text_log_proxy" "$enhanced_proxy" "$optional_assets_proxy" "$whitelist" "$environment_rules" "$redirect" "$tls_upstream" "$untrusted_upstream" "$mismatched_upstream" "$upstream"; do
             if docker container inspect "$container" >/dev/null 2>&1; then
                 docker logs "$container" >&2 || true
             fi
         done
     fi
-    docker rm -f "$proxy" "$limited_proxy" "$trusted_proxy" "$json_proxy" "$body_log_proxy" "$text_log_proxy" "$enhanced_proxy" "$whitelist" "$environment_rules" "$redirect" "$tls_upstream" "$untrusted_upstream" "$mismatched_upstream" "$upstream" >/dev/null 2>&1 || true
+    docker rm -f "$proxy" "$limited_proxy" "$trusted_proxy" "$json_proxy" "$body_log_proxy" "$text_log_proxy" "$enhanced_proxy" "$optional_assets_proxy" "$whitelist" "$environment_rules" "$redirect" "$tls_upstream" "$untrusted_upstream" "$mismatched_upstream" "$upstream" >/dev/null 2>&1 || true
     docker network rm "$network" >/dev/null 2>&1 || true
     docker volume rm "$rules_volume" >/dev/null 2>&1 || true
     rm -f "$body" "$cert" "$public_dir/test.txt" \
@@ -402,23 +403,22 @@ return 200;" \
     printf '%s\n' "$output" | grep -Eq 'ERROR:|nginx: \[emerg\]'
 done
 
-printf 'test-logo' > "$missing_public_dir/images/govuk-logo.svg"
-if output="$(docker run --rm --network "$network" \
-    -v "$missing_public_dir:/public:ro" \
-    -e PROXY_SERVICE_HOST="$upstream" -e PROXY_SERVICE_PORT=8080 "$image" 2>&1)"; then
-    echo "Expected startup to fail without the shared CSS" >&2
-    exit 1
-fi
-printf '%s\n' "$output" | grep -Fq 'Required shared asset /public/css/app.css'
-printf 'test-css' > "$missing_public_dir/css/app.css"
+docker run -d --name "$optional_assets_proxy" --network "$network" \
+    -p "$localhost_ip::10080" -v "$missing_public_dir:/public:ro" \
+    -e PROXY_SERVICE_HOST="$upstream" -e PROXY_SERVICE_PORT=8080 \
+    -e HTTPS_REDIRECT=FALSE "$image" >/dev/null
+optional_assets_port="$(port_for "$optional_assets_proxy" 10080)"
+wait_for_proxy "$optional_assets_port"
+docker rm -f "$optional_assets_proxy" >/dev/null
+
+: > "$missing_public_dir/css/app.css"
 : > "$missing_public_dir/images/govuk-logo.svg"
-if output="$(docker run --rm --network "$network" \
-    -v "$missing_public_dir:/public:ro" \
-    -e PROXY_SERVICE_HOST="$upstream" -e PROXY_SERVICE_PORT=8080 "$image" 2>&1)"; then
-    echo "Expected startup to fail with an empty shared logo" >&2
-    exit 1
-fi
-printf '%s\n' "$output" | grep -Fq 'Required shared asset /public/images/govuk-logo.svg'
+docker run -d --name "$optional_assets_proxy" --network "$network" \
+    -p "$localhost_ip::10080" -v "$missing_public_dir:/public:ro" \
+    -e PROXY_SERVICE_HOST="$upstream" -e PROXY_SERVICE_PORT=8080 \
+    -e HTTPS_REDIRECT=FALSE "$image" >/dev/null
+optional_assets_port="$(port_for "$optional_assets_proxy" 10080)"
+wait_for_proxy "$optional_assets_port"
 
 docker run --rm --entrypoint /bin/sh "$image" -c \
     'test ! -e /usr/local/bin/geoipupdate && ! apk info -e libmaxminddb-libs >/dev/null'

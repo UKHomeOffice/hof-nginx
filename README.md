@@ -221,11 +221,12 @@ The proxy serves branded pages for HTTP 429 and 501 as well as the other
 configured errors. It accepts request headers containing underscores.
 
 Proxy error pages use the application's `/public/css/app.css` and
-`/public/images/govuk-logo.svg`. Each service must provide compatible GOV.UK
-classes; the proxy image does not bundle them. At startup, both files must be
-non-empty regular files readable by UID 1000 or the container exits with an
-error. Exact NGINX locations serve these two paths directly from `/public`,
-without proxying them to the application or applying the proxy rate limit.
+`/public/images/govuk-logo.svg` when those assets are available. Each service
+must provide compatible GOV.UK classes; the proxy image does not bundle them.
+These files are optional and are not checked at startup. Exact NGINX locations
+serve these two paths directly from `/public`, without proxying them to the
+application or applying the proxy rate limit. Requests for unavailable assets
+return 404.
 
 For example, the BRP service's
 [`run.sh`](https://github.com/UKHomeOffice/brp_enquiry_forms/blob/master/run.sh)
@@ -237,12 +238,10 @@ cp -r /app/public/* /public/
 ```
 
 In Kubernetes, mount the same `emptyDir` volume at `/public` in both the app
-and NGINX containers. The app writes the files and NGINX reads them; containers
-do not otherwise share their filesystems. An `emptyDir` lasts for the pod's
-lifetime but may be empty when NGINX starts. If the files have not yet been
-copied, NGINX exits and Kubernetes must restart it after they become available;
-if the app never populates them, the sidecar remains unavailable. Consider an
-init container to populate the volume before either container starts.
+and NGINX containers when the proxy error pages need these assets. The app
+writes the files and NGINX reads them; containers do not otherwise share their
+filesystems. An `emptyDir` lasts for the pod's lifetime and can be populated
+after NGINX starts.
 
 To serve other shared files, configure a `/public/` location using
 `ADD_NGINX_SERVER_CFG`, for example:

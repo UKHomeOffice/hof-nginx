@@ -22,11 +22,6 @@ fi
 : "${PROXY_SERVICE_HOST:?PROXY_SERVICE_HOST is required}"
 : "${PROXY_SERVICE_PORT:?PROXY_SERVICE_PORT is required}"
 
-for asset in /public/css/app.css /public/images/govuk-logo.svg; do
-    [ -f "$asset" ] && [ -r "$asset" ] && [ -s "$asset" ] ||
-        fail "Required shared asset $asset must be a non-empty file readable by UID 1000."
-done
-
 case "$PROXY_SERVICE_HOST" in
     http://*) scheme=http; host=${PROXY_SERVICE_HOST#http://} ;;
     https://*) scheme=https; host=${PROXY_SERVICE_HOST#https://} ;;
