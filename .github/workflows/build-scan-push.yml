@@ -215,6 +215,10 @@ jobs:
           set -euo pipefail
           : "${SLACK_WEBHOOK_URL:?Configure the SLACK_WEBHOOK_URL Actions secret}"
           : "${IMAGE_DIGEST:?The release image digest is missing}"
+          if [[ ! "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::The release image digest is invalid."
+            exit 1
+          fi
           IMAGE_REFERENCE="$REGISTRY/$REPOSITORY:$RELEASE_TAG@$IMAGE_DIGEST"
           : "${IMAGE_REFERENCE:?The release image reference is missing}"
           message=$(printf '*New hof-nginx image released:* `%s`\n\n<!subteam^S04P405F3UY|@hof-devs> <!subteam^S04P42A009E|@hof-devops> <!subteam^S04P412M6M6|@hof-qat>\n\nReact with :done_tick: once Confluence has been updated with the latest image URL and tag.\n\nCommit <%s/%s/commit/%s|%.8s> | <https://eu-west-2.console.aws.amazon.com/ecr/repositories?region=eu-west-2|ECR repositories> | *Build <%s/%s/actions/runs/%s|#%s>*' \

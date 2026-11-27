@@ -126,6 +126,7 @@ wait_for_proxy "$http_port"
 
 test "$(docker exec "$proxy" id -u)" = 1000
 docker exec "$proxy" nginx -e /dev/stderr -t
+docker exec "$proxy" nginx -T 2>&1 | grep -q 'proxy_ssl_verify_depth 3;'
 docker exec "$proxy" /healthcheck.sh
 docker exec "$proxy" touch -t 200001010000 /run/nginx/nginx_reload.txt
 health_output="$(docker exec -e NGINX_RELOAD_INTERVAL=1 "$proxy" /healthcheck.sh)"
@@ -384,6 +385,7 @@ for setting in ALLOW_COUNTRY_CSV_2=GB DENY_COUNTRY_ON_2=TRUE LOCATIONS_CSV=/ \
     REQS_PER_MIN_PER_IP=2147483648 RATE_LIMIT_BURST=-1 REQS_PER_MIN_PER_IP_2=10 \
     RATE_LIMIT_ENABLED=invalid ACCESS_LOG_FORMAT=invalid LOG_REQUEST_BODY=invalid \
     GZIP_ENABLED=invalid VERBOSE_ERROR_PAGES=invalid FEEDBACK_EMAIL='bad;value' \
+    $'FEEDBACK_EMAIL=support@example.org"\nreturn 200;' \
     TRUSTED_PROXY_CIDRS=invalid "TRUSTED_PROXY_CIDRS=$upstream_ip," \
     "TRUSTED_PROXY_CIDRS=$upstream_ip/999" \
     "TRUSTED_PROXY_CIDRS=$upstream_ip;return 200" \
@@ -392,7 +394,8 @@ return 200;" \
     LOG_REQUEST_BODY=TRUE \
     'ADD_NGINX_SERVER_CFG=invalid directive;' \
     'EXTRA_NAXSI_RULES=invalid directive;' \
-    PROXY_SERVICE_HOST='bad;host'; do
+    PROXY_SERVICE_HOST='bad;host' \
+    $'PROXY_SERVICE_HOST=valid.example"\nreturn 200;'; do
     if output="$(docker run --rm --network "$network" \
         -v "$public_dir:/public:ro" \
         -e PROXY_SERVICE_HOST="$upstream" -e PROXY_SERVICE_PORT=8080 \
