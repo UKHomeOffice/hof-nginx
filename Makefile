@@ -1,0 +1,40 @@
+.DEFAULT_GOAL := help
+
+IMAGE ?= hof-nginx:local
+HTTP_PORT ?= 10080
+HTTPS_PORT ?= 10443
+HTTPS_REDIRECT ?= FALSE
+
+export IMAGE HTTP_PORT HTTPS_PORT HTTPS_REDIRECT PROXY_SERVICE_HOST PROXY_SERVICE_PORT PUBLIC_DIR
+
+.PHONY: help build test run scan
+
+help:
+	@printf '%s\n' \
+	  'make build  Build the local image' \
+	  'make test   Build and run the smoke tests' \
+	  'make run    Build and run against PROXY_SERVICE_HOST and PROXY_SERVICE_PORT' \
+	  'make scan   Build and scan with local Trivy'
+
+build:
+	docker build -t "$$IMAGE" .
+
+test: build
+	bash tests/smoke.sh "$$IMAGE"
+
+run: build
+	@: "$${PROXY_SERVICE_HOST:?Set PROXY_SERVICE_HOST to the upstream host}"
+	@: "$${PROXY_SERVICE_PORT:?Set PROXY_SERVICE_PORT to the upstream port}"
+	@: "$${PUBLIC_DIR:?Set PUBLIC_DIR to the absolute path of the application public directory}"
+	@localhost_ip="$$(docker run --rm --entrypoint getent "$$IMAGE" ahostsv4 localhost | awk 'NR == 1 {print $$1}')"; \
+	  : "$${localhost_ip:?Unable to resolve IPv4 localhost}"; \
+	  docker run --rm \
+	  -p "$$localhost_ip:$$HTTP_PORT:10080" -p "$$localhost_ip:$$HTTPS_PORT:10443" \
+	  --mount "type=bind,src=$$PUBLIC_DIR,dst=/public,readonly" \
+	  -e PROXY_SERVICE_HOST -e PROXY_SERVICE_PORT -e HTTPS_REDIRECT \
+	  -e "HTTPS_REDIRECT_PORT=$$HTTPS_PORT" "$$IMAGE"
+
+scan: build
+	trivy image --scanners vuln --pkg-types os,library --dependency-tree \
+	  --severity MEDIUM,HIGH,CRITICAL --ignorefile /dev/null \
+	  --exit-code 1 "$$IMAGE"

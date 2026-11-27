@@ -1,0 +1,3 @@
+<!--#set var="title" value="Too many requests" -->
+<!--#set var="partial" value="429" -->
+<!--#include file="template.shtml" -->
