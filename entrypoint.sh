@@ -102,6 +102,9 @@ case "$VERBOSE_ERROR_PAGES" in
 esac
 FEEDBACK_EMAIL=${FEEDBACK_EMAIL:-}
 if [ -n "$FEEDBACK_EMAIL" ]; then
+    case "$FEEDBACK_EMAIL" in
+        *[[:space:]]*) fail "FEEDBACK_EMAIL must be a simple email address." ;;
+    esac
     printf '%s\n' "$FEEDBACK_EMAIL" | grep -Eq '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+$' ||
         fail "FEEDBACK_EMAIL must be a simple email address."
 fi
