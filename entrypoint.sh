@@ -27,6 +27,9 @@ case "$PROXY_SERVICE_HOST" in
     https://*) scheme=https; host=${PROXY_SERVICE_HOST#https://} ;;
     *) scheme=http; host=$PROXY_SERVICE_HOST ;;
 esac
+case "$host" in
+    *[[:space:]]*) fail "PROXY_SERVICE_HOST must not contain whitespace." ;;
+esac
 printf '%s\n' "$host" | grep -Eq '^([a-zA-Z0-9][a-zA-Z0-9.-]*|\[[0-9a-fA-F:]+\])$' ||
     fail "PROXY_SERVICE_HOST must be a hostname or IP address, optionally preceded by http:// or https://."
 
