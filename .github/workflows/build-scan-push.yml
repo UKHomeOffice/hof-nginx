@@ -15,7 +15,7 @@ jobs:
     permissions:
       contents: read
     outputs:
-      image_reference: ${{ steps.push.outputs.image_reference }}
+      manifest_digest: ${{ steps.push.outputs.manifest_digest }}
     steps:
       # Fetch the source and full history needed to validate release tags.
       - name: Checkout source
@@ -192,7 +192,7 @@ jobs:
             image_reference="$release_image@$index_digest"
           fi
           docker buildx imagetools inspect "$image_reference"
-          printf 'image_reference=%s\n' "$image_reference" >> "$GITHUB_OUTPUT"
+          printf 'manifest_digest=%s\n' "$index_digest" >> "$GITHUB_OUTPUT"
           printf 'Deployable multi-architecture image: %s\n' "$image_reference" | tee -a "$GITHUB_STEP_SUMMARY"
 
   # Notify Slack after a successful tagged release.
@@ -207,10 +207,15 @@ jobs:
       - name: Send release notification
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          IMAGE_REFERENCE: ${{ needs.build-and-push.outputs.image_reference }}
+          REGISTRY: 340268328991.dkr.ecr.eu-west-2.amazonaws.com
+          REPOSITORY: sas/hof-nginx
+          RELEASE_TAG: ${{ github.ref_name }}
+          IMAGE_DIGEST: ${{ needs.build-and-push.outputs.manifest_digest }}
         run: |
           set -euo pipefail
           : "${SLACK_WEBHOOK_URL:?Configure the SLACK_WEBHOOK_URL Actions secret}"
+          : "${IMAGE_DIGEST:?The release image digest is missing}"
+          IMAGE_REFERENCE="$REGISTRY/$REPOSITORY:$RELEASE_TAG@$IMAGE_DIGEST"
           : "${IMAGE_REFERENCE:?The release image reference is missing}"
           message=$(printf '*New hof-nginx image released:* `%s`\n\n<!subteam^S04P405F3UY|@hof-devs> <!subteam^S04P42A009E|@hof-devops> <!subteam^S04P412M6M6|@hof-qat>\n\nReact with :done_tick: once Confluence has been updated with the latest image URL and tag.\n\nCommit <%s/%s/commit/%s|%.8s> | <https://eu-west-2.console.aws.amazon.com/ecr/repositories?region=eu-west-2|ECR repositories> | *Build <%s/%s/actions/runs/%s|#%s>*' \
             "$IMAGE_REFERENCE" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_SHA" \
